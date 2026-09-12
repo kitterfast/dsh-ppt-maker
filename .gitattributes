@@ -1,0 +1,4 @@
+# 所有文本文件在仓库里和任何平台的检出都统一为 LF。
+# 这样一次全新 clone 与源目录逐字节一致，`_verify/verify-package.mjs` 的
+# "安装与源一致" 比较不会因为 CRLF 而报出误导性的差异。
+* text=auto eol=lf

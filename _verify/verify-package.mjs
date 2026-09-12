@@ -57,6 +57,7 @@ const REQUIRED = [
 	"LICENSE",
 	"CHANGELOG.md",
 	".gitignore",
+	".gitattributes",
 	join(".github", "workflows", "verify.yml"),
 	"lib/index.js",
 	"lib/client.js",
@@ -104,7 +105,7 @@ check("LICENSE file matches the declared license", () => {
 //#region 3. files[] covers the whole source tree
 check("files[] declares every top-level entry of the source tree", () => {
 	const listed = new Set(pkg.files ?? []);
-	const alwaysIncluded = new Set(["package.json", ".gitignore", ".github"]);
+	const alwaysIncluded = new Set(["package.json", ".gitignore", ".gitattributes", ".github"]);
 	const roots = new Set(walk(PLUGIN_DIR).map((rel) => rel.split(/[\\/]/)[0]));
 	const undeclared = [...roots].filter((name) => !listed.has(name) && !alwaysIncluded.has(name));
 	assert.deepEqual(undeclared, [], `源树里有未在 files[] 声明的顶层条目: ${undeclared.join(", ")}`);
@@ -150,10 +151,13 @@ const packagedFiles = sourceFiles.filter((rel) => {
 if (!existsSync(INSTALL_DIR)) {
 	console.log(`  --  install target not found (${INSTALL_DIR || "n/a"}); sync check skipped`);
 } else {
-	check("every packaged file is installed and byte-identical", () => {
+	check("every packaged file is installed with identical content", () => {
 		const missing = packagedFiles.filter((f) => !existsSync(join(INSTALL_DIR, f)));
 		assert.deepEqual(missing, [], `安装目标缺少: ${missing.join(", ")}`);
-		const drifted = packagedFiles.filter((f) => !readFileSync(join(PLUGIN_DIR, f)).equals(readFileSync(join(INSTALL_DIR, f))));
+		/* 归一化行尾再比：仓库里统一 LF（见 .gitattributes），但 Windows 上某次 checkout
+		   可能带 CRLF —— 那是**表示**差异，不是内容差异，不该报成"不一致"。 */
+		const norm = (p) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
+		const drifted = packagedFiles.filter((f) => norm(join(PLUGIN_DIR, f)) !== norm(join(INSTALL_DIR, f)));
 		assert.deepEqual(drifted, [], `安装与源不一致: ${drifted.join(", ")}`);
 	});
 	check("install target carries no file the source does not have", () => {
