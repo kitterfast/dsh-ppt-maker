@@ -32,10 +32,14 @@ const check = (label, fn) => {
 };
 const sha = (buf) => createHash("sha256").update(buf).digest("hex");
 
-/** Walk a directory into relative file paths (no symlink following). */
+/** Directories that are never plugin source (VCS metadata, installed deps). */
+const SKIP_DIRS = new Set([".git", "node_modules"]);
+
+/** Walk a directory into relative file paths (no symlink following, no VCS/deps). */
 function walk(dir, base = dir) {
 	const out = [];
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
 		const full = join(dir, entry.name);
 		if (entry.isDirectory()) out.push(...walk(full, base));
 		else if (entry.isFile()) out.push(relative(base, full));
