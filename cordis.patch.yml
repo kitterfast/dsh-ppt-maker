@@ -1,0 +1,9 @@
+# dsh-ppt-maker bundle patch
+#
+# Mirrors the published-plugin convention (see dsh-better-sidebar): the profile
+# boot merges this patch, which inserts exactly one plugin row. Adding
+# "dsh-ppt-maker" to `dsh.profile.bundles` is what activates the patch; the row
+# id is stable so a re-mount is a no-op.
+- insert:
+    - id: ppt-maker
+      name: 'dsh-ppt-maker'

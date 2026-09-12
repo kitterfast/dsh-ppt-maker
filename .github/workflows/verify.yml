@@ -1,0 +1,22 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Package checks (source completeness, packaging metadata, prompt payload)
+        run: npm run verify:package
+      - name: Client bundle behaviour checks
+        run: npm run verify:client
