@@ -31,14 +31,16 @@
 
 ### 方式 A：一句话给 agent（推荐）
 
-把这句话连同仓库地址交给你的 DSH agent：
+把下面这句**原样**交给你的 DSH agent（连仓库地址一起给，它就能自己装）：
 
-> 帮我装 DSH 插件 `github:kitterfast/dsh-ppt-maker`（profile 用 web），装完重启桌面端
+> 让Agent执行命令：「帮我装 DSH 插件 github:kitterfast/dsh-ppt-maker（profile 用 web），装完重启桌面端」，安装插件后在对话框左下方的加号处可以找到「PPT 制作」
+> 插件地址：https://github.com/kitterfast/dsh-ppt-maker · v1.4.0
 
 或者它自己执行：
 
 ```powershell
-dsh plugin --profile web add github:kitterfast/dsh-ppt-maker
+dsh plugin --profile web add github:kitterfast/dsh-ppt-maker          # 跟随 main（永远最新）
+dsh plugin --profile web add github:kitterfast/dsh-ppt-maker#v1.4.0   # 固定 v1.4.0（可复现）
 ```
 
 `dsh plugin add` 会把参数转发给 profile 目录下的 pnpm。仓库里已经声明了 `dsh.bundle.patch` 与 `dsh.client`，
