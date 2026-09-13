@@ -32,7 +32,7 @@
 ## 0. 启动指令（复制这一整段；用 §-1 方式触发时可跳过）
 
 > 按本文件（`PPT全流程_一键编排提示词.md`）执行全流程，**自包含，不要去找别的文件**：
-> 1. 先做 §一 阶段 A（准备环境）：验证两个 skill 与工具链，缺什么补什么，出就绪报告；
+> 1. 先做 §一 阶段 A（准备环境）：先跑 **A1.5 新用组件自检**（缺什么自动装），再验证两个 skill 与工具链，出就绪报告；
 > 2. **动任何生图步骤之前先问我"要不要 AI 生图"**（检查点 0）：要 → 做 §二 阶段 B；不要 → **整段跳开阶段 B，配图走 §三 C5 的「七B」**，不许碰 arkcli、不许注册火山方舟；
 > 3. 然后按 §三 阶段 C 顺序跑完 PPT 全流程（一 → 十一），其中**检查点 ①（要需求）/ ②（选风格）/ ③（转不转 PPTX）必须停下等我选**；
 > 4. 全程守 §四 的硬规则；每个阶段做完停下等我确认再进下一阶段；最后按 §四 D5 格式交报告。
@@ -62,7 +62,7 @@
 阶段 A  准备环境（幂等：验证 → 补齐，不用问）          产出：就绪报告
    ↓
 检查点 0 ★ 问：要不要 AI 生图？
-   ├─ 要  → 阶段 B：arkcli + Seedream 通道（幂等验证/补齐，含三道人工闸门）
+   ├─ 要  → 阶段 B：arkcli + Seedream 通道（幂等验证/补齐；登录闸门① 已 0 手动，只剩 ②③）
    └─ 不要→ 跳过阶段 B，配图走「七B」
    ↓
 阶段 C  PPT 全流程
@@ -118,6 +118,32 @@
 **联网方式预检**：分别实测 Node `fetch` / `Invoke-WebRequest` / `curl.exe`。
 实测结论：Windows 上后两者**经常整体不可用**（`curl` 可能返回 `http=000`），
 **一切下载动作都用 Node `fetch` 脚本**，不要依赖它们。
+
+### A1.5 本次流程新用组件：自检 + 自动安装（**第一步就跑，一条命令｜2026-09-13 新增**）
+
+"0 手动登录"依赖下面 4 个组件。**开工先整体体检一遍，缺什么自动装什么**——不要等用到某一步才发现缺、再回头打断用户。
+
+```powershell
+# <插件目录> = 已安装的 dsh-ppt-maker 目录，例如 %USERPROFILE%\.dsh\local-plugins\dsh-ppt-maker
+powershell -NoProfile -ExecutionPolicy Bypass -File "<插件目录>\scripts\check-env.ps1"
+# 只体检、不安装：末尾加 -NoInstall
+```
+
+| 组件 | 为什么需要 | 检查方式 | 缺失时自动做什么 |
+|---|---|---|---|
+| **Node ≥ 22** | `scripts/cdp/*.mjs` 用的是 Node **自带的全局 `WebSocket`**（Node 21+ 才有，故要求 22；这样零第三方依赖） | `node -v` | 报告 + 给安装指引（**不许静默降级到装 `ws`**） |
+| **`arkcli`** | 火山方舟通道（生图／模型／用量） | `%APPDATA%\npm\arkcli.cmd --version` | `npm i -g @volcengine/ark-cli@latest` |
+| **`dsh-chrome-cdp` 插件** | 让 agent 拥有原生 `chrome_*` 浏览器工具。**注意：0 手动登录并不依赖它**——`scripts/cdp/*.mjs` 自己直连 CDP | 读 `~\.dsh\profiles\web\package.json` 的 `dsh.profile.bundles` 是否含 `dsh-chrome-cdp` | `dsh plugin --profile web add github:xiaobai2017666/dsh-chrome-cdp`（**装完要重启宿主**才会出现工具） |
+| **专属自动化浏览器（CDP）** | 自动点【授权】/【开通】等页面操作；独立 profile，**不碰用户日常浏览器** | 探 `http://127.0.0.1:9222/json/version` | `scripts\start-volc-browser.ps1` 拉起（受限沙箱会秒杀 GUI 进程 → 需「完全访问」预设，见 A0） |
+
+**判定**：脚本最后打印 `[DONE] environment ready` = 全绿，直接继续；
+打印 `[DONE] unresolved: ...` = **把该行原文贴给用户**并停下等答复，不要自己硬猜。
+
+**唯一可能落到真人身上的一步**（脚本会明确标 `[HUMAN]`）：
+专属浏览器**从未登录过火山**时，需要用户在那个窗口里用**手机验证码或扫码**登录**一次**。
+之后所有登录/续期都是 0 手动（实测单次约 40 秒）。**除这一步外，不许请用户手工操作。**
+
+---
 
 ## A2. 装两个 skill（幂等：先验证，缺才补）
 
@@ -194,6 +220,7 @@ node -e "const m=['pptxgenjs','jszip','pngjs','gifenc','fast-xml-parser','echart
 | emilkowalski-motion | ✅/❌ | 同上 |
 | Node 工具链 | ✅/❌ | 9 个包的校验输出 |
 | 无头浏览器 | ✅/❌ | 实际探测到的路径 |
+| **新用组件自检（A1.5）** | ✅/❌ | `check-env.ps1` 的 5 行结论：Node／arkcli／dsh-chrome-cdp／CDP 浏览器／火山登录态 |
 | 目录结构 | ✅/❌ | 三个目录 |
 
 ---
@@ -202,7 +229,7 @@ node -e "const m=['pptxgenjs','jszip','pngjs','gifenc','fast-xml-parser','echart
 # 二、检查点 0 ★ 要不要 AI 生图（**必须先问，不许默认**）
 
 > **PPT 里的配图走哪条？**
-> **A. AI 生图**（火山方舟 Seedream）：效果更"照片感/插画感"；需要你**注册火山引擎 + 完成实名 + 开通模型 + 按量计费**（约 0.22–0.3 元/张），并且要**你本人点一次浏览器授权**。
+> **A. AI 生图**（火山方舟 Seedream）：效果更"照片感/插画感"；需要你**注册火山引擎 + 完成实名 + 开通模型 + 按量计费**（约 0.22–0.3 元/张）。**登录已经 0 手动**：agent 自己跑 `scripts\volc-0manual-login.ps1` 完成（详见 B3）；只有**首次**需要你在专属自动化浏览器里登录一次。
 > **B. 程序化图形 / SVG**（走「七B」）：**零成本、零账号、断网可用、可打印**；风格是"设计感/图示感"而非"照片感"。
 > 我的建议：需要真实感插画选 A；只要结构图/图标/抽象几何选 B。
 
@@ -240,16 +267,37 @@ $ark = "$env:APPDATA\npm\arkcli.cmd"      # 归因前缀见 B1
 **判定只有三种**：**P1** 套餐通道可用（有模型 **且** keys 非空）→ 直接 `+gen`；
 **P2** 套餐通道缺 Key → 走闸门②；**P3** 走按量通道（该模型 `State=Available`）→ 先 `+deploy` 再 `+gen`。
 
-### B3. 三道人工闸门（**一次性列全，不要分次打断**）
-| 闸门 | 触发 | 用户要做什么 |
-|---|---|---|
-| ① 未登录 | `logged_in: false` | **首选**：你自己跑一条 `arkcli auth login volc-sso`（浏览器同设备回调，**不需要回贴任何码**，profile 与 Key 会保留）。备选两段式：后台跑 `arkcli auth login --no-browser` → 把它打印的 `authorize_url` 给你 → 你回贴页面上的 base64 授权码 → `arkcli auth login --no-browser --code <码>` |
-| ② 套餐通道缺 Key | `available_api_keys: []` 且报 `API Key is required` | 你在**自己的终端**跑 `arkcli auth apikey`，选第一个 `ark***`（非交互环境会报"选择取消"，必须真人跑） |
-| ③ 模型未开通 | `State=Unavailable` 且 `+deploy` 报 `model_activation_required` | 去控制台开通：`https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement?advancedActiveKey=model` —— **必须点名要开哪一行**：`doubao-seedream-5-0`＝控制台"Doubao-Seedream-5.0-lite"；`doubao-seedream-5-0-pro`＝"Doubao-Seedream-5.0-pro"，是两条独立条目 |
+### B3. 登录与开通闸门（**① 已改为 0 手动；2026-09-13 实测**）
+
+**闸门①（未登录）→ 0 手动：agent 自己跑一条命令，不要让用户动手**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "<插件目录>\scripts\volc-0manual-login.ps1"
+```
+
+它内部就是三段（也可拆开单独跑，便于定位失败点）：
+
+1. `arkcli auth login volc-sso --no-browser` → 得到 `authorize_url`（**有效期 600 秒**）；
+2. `node scripts\cdp\authorize.mjs "<authorize_url>" --state <state>` → 在**专属自动化浏览器**里点【继续登录】→【授权成功】→ 从隐藏 `textarea` 读出 base64 码，打印 `CODE:`，并落一张截图；
+3. `arkcli auth login --no-browser --code <码>` → 交换令牌。
+
+**三条必须守住的约束（全部是踩过的坑）**
+
+- **码必须校验 `state`**：与 Phase 1 的 `state` 不一致的码一律丢弃。曾经因为 `authorize.mjs` 崩了转而读剪贴板，结果**把上一轮的旧码喂进 Phase 2**，服务端正确拒绝：`state 参数不匹配,可能存在安全风险 (CSRF)`。`.ps1` 的剪贴板兜底现在也强制校验 `state`。
+- **`authorize_url` 只有 600 秒**：浏览器那步失败就**重跑 Phase 1 拿新链接**，不要拿旧链接反复试。
+- **判定成功不能只看 `logged_in: true`**：还要确认 `control_plane_auth.sts_expires_at_ms` **变了**（=本次真的刷新过）；否则可能只是上一轮登录还没过期的**假阳性**。
+
+**闸门②（套餐通道缺 Key）仍是真人步骤**：非交互环境下 `arkcli auth apikey` 报"选择取消"——它是交互式选择器，本流程无法自动化（桌面自动化插件 `dsh-click` 在本机因加载时序 bug 不可用）。**一次列全后等用户**。
+
+**闸门③（模型未开通）**：可以**尝试**用 CDP 自动点开通，但要留退路：
+`node scripts\cdp\goto.mjs "<控制台开通页>"` 先读页面确认哪一行是"未开通" → `node scripts\cdp\click.mjs "开通"` 点击 → **必须截图留证**。
+**页面结构不匹配、点了没反应、或出现任何确认弹窗 → 立刻回退成"把链接交回用户并点名要开哪一行"**，不要反复点。
+控制台开通页：`https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement?advancedActiveKey=model`
+（`doubao-seedream-5-0`＝"Doubao-Seedream-5.0-lite"；`doubao-seedream-5-0-pro`＝"Doubao-Seedream-5.0-pro"，是两条独立条目）
 
 **已知坑（务必避开）**
 - 走"借道 ve 设备码"形态时，打印的 `Successfully logged in!` 是 **ve 的**，arkcli 仍可能 `logged_in:false`
-  → **必须再补一次 `arkcli auth login volc-sso`**（否则等于白烧掉用户一次授权）
+  → 以 `arkcli auth status --transform 'logged_in'` 为准，必要时重跑 B3-①
 - 非交互环境**严禁**自己加 `--yes`、设 `ARKCLI_ALLOW_HEADLESS_ACTIVATION=1` / `ARKCLI_ALLOW_HEADLESS_DELETE=1` 代替用户授权
 - 套餐通道 `--model` 用套餐模型名（如 `doubao-seedream-5.0-lite`）；**按量通道必须用 `ep-xxx`**，没有就先 `+deploy`：
   `& $ark +deploy --profile <platform> --name <ep名> --model <完整ID>`（执行前复述 model/name/region/计费）
@@ -578,7 +626,8 @@ ppt 内容为
 
 ## D3. 硬规则
 1. **幂等**：先检查再安装；判定以关键文件/命令输出为准，不以目录为准
-2. **需用户本人操作的**（浏览器授权、绑 Key、模型开通、付费、删资源）**必须一次列全并等待**；
+2. **需用户本人操作的**（**首次**在专属自动化浏览器里登录火山、`auth apikey` 绑 Key、付费、删资源）**必须一次列全并等待**；
+   其中**闸门①登录**与**闸门③开通**要**先走自动化**（见 B3：`scripts\volc-0manual-login.ps1` 与 `scripts\cdp\*.mjs`），**自动化失败才回退**给用户，不要一上来就把活推给人；
    **严禁**代替用户加 `--yes`、`set ARKCLI_ALLOW_HEADLESS_ACTIVATION=1`、`ARKCLI_ALLOW_HEADLESS_DELETE=1`
 3. **不编造**：不虚构版本号、模型名、路径、价格、开通状态、数据；查不到写"未核实"，失败贴**原始报错**
 4. **不打印密钥**：API Key / token / secret 只输出掩码
@@ -603,7 +652,10 @@ ppt 内容为
 | `Invoke-WebRequest`/`curl` 报连接关闭 / `http=000` | Windows 上二者可能整体不可用 | 下载全走 Node `fetch` |
 | 从项目根 `require.resolve` 报全部缺失，但明明装过 | 包装在子目录（如 `_ppt-build\node_modules`） | 按 A3"根 + 子目录一起查"，缺的补到根上 |
 | arkcli 报 `create staging directory ... Access is denied` | 沙箱只允许写工作目录 | 放宽会话文件权限（最好开工前一次性放宽） |
-| 设备码授权后 `Successfully logged in!` 但 `auth status` 仍 `logged_in:false` | 那句是 `ve` 的 | 立刻补跑 `arkcli auth login volc-sso` |
+| 设备码授权后 `Successfully logged in!` 但 `auth status` 仍 `logged_in:false` | 那句是 `ve` 的 | 以 `auth status --transform 'logged_in'` 为准；重跑 `scripts\volc-0manual-login.ps1` |
+| **`state 参数不匹配,可能存在安全风险 (CSRF)`** | 把**非本次**的授权码喂给了 Phase 2 —— 典型是取码脚本失败后读了**剪贴板里的旧码** | 重跑 Phase 1 拿**新的** `authorize_url`；确保 `authorize.mjs --state <本次state>`；**不要用剪贴板里的旧码**（`.ps1` 已强制校验 state） |
+| **`authorize.mjs` 不打印 `CODE:` / 卡在某一步** | 专属浏览器没起来，或授权页结构变了 | 先 `check-env.ps1` 看 CDP 是否在线；再看脚本落的截图（`%TEMP%\volc-cdp\authorize-step*.png`）确认停在哪个页面 |
+| **登录后 `logged_in: true` 但可能没真的刷新** | `logged_in` 会被上一轮还没过期的会话顶成 `true`（**假阳性**） | 对比 `control_plane_auth.sts_expires_at_ms` 是否变化；验证时最好先 `auth logout` 再跑，排除旧会话 |
 | `API Key is required` | 套餐 profile 的 `available_api_keys` 为空 | 用户在自己终端跑 `arkcli auth apikey` |
 | `platform data plane requires an endpoint id (ep-...)` | 按量通道不认模型名 | 先 `+deploy` 拿 `ep-xxx` |
 | `model_activation_required` | 模型未开通，非交互硬拒 | 把控制台开通链接交回用户；**不许 `--yes`** |
@@ -635,7 +687,7 @@ ppt 内容为
 ## D5. 收尾报告格式（缺一项都算没做完）
 | 项目 | 内容 |
 |---|---|
-| 阶段 A | 就绪报告（skill / 工具链 / 目录 / 浏览器路径） |
+| 阶段 A | 就绪报告（**新用组件自检 5 项** / skill / 工具链 / 目录 / 浏览器路径） |
 | 检查点 0 | 用户选择 A 还是 B；若 B 写明"未使用 AI 生图" |
 | 阶段 B（走 A 时） | 通道、模型、endpoint id、试片结果、单价 |
 | 阶段 C | 各节产出与文件路径；三个检查点的用户选择；**【六】逐页素材判断清单（即使结论是跳过也必须附）** |
@@ -654,9 +706,10 @@ node -v && npm.cmd -v && npx.cmd -v
 node -e "const fs=require('fs'),p=require('path');(async()=>{for(const s of ['creative-director','emilkowalski-motion']){const d=p.join(process.env.USERPROFILE,'.agents','skills',s);fs.mkdirSync(d,{recursive:true});const us=[['https://cdn.jsdelivr.net/gh/nexu-io/open-design@main/skills/'+s+'/SKILL.md',{}],['https://api.github.com/repos/nexu-io/open-design/contents/skills/'+s+'/SKILL.md?ref=main',{'user-agent':'skills-fetch','accept':'application/vnd.github.raw'}]];let ok=false;for(const [u,h] of us){try{const r=await fetch(u,{headers:h});if(!r.ok)continue;const t=await r.text();if(t.length<200||!t.includes('name:'))continue;fs.writeFileSync(p.join(d,'SKILL.md'),t);console.log('OK',s,t.length);ok=true;break;}catch(e){}}if(!ok)console.log('FAILED',s);}})()"
 npm.cmd i pptxgenjs jszip pngjs gifenc fast-xml-parser echarts three gsap lottie-web
 mkdir assets assets\_backup build
-# 仅在"要 AI 生图"时需要：
+# 仅在"要 AI 生图"时需要（登录已 0 手动：下面这条自己完成 Phase1 → 浏览器点授权 → Phase2）
+powershell -NoProfile -ExecutionPolicy Bypass -File "<插件目录>\scripts\check-env.ps1"        # 先体检：缺什么自动装
+powershell -NoProfile -ExecutionPolicy Bypass -File "<插件目录>\scripts\volc-0manual-login.ps1"
 arkcli.cmd auth status
-arkcli.cmd auth login volc-sso
 arkcli.cmd auth apikey
 arkcli.cmd resources list --modality image
 arkcli.cmd pricing models --model doubao-seedream-5-0-pro --format json

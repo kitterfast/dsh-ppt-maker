@@ -2,6 +2,20 @@
 
 版本号写在 `package.json` 与 `lib/client.js` 的 `PLUGIN_VERSION` 两处，校验器会断言两者一致。
 
+## 1.4.0
+
+- **登录改为 0 手动（本机实测）**：新增 `scripts/volc-0manual-login.ps1`，自己完成
+  `arkcli auth login volc-sso --no-browser` → 在专属自动化浏览器里点【继续登录】/【授权成功】→ 取回 base64 授权码 → `--code` 交换令牌。
+  实测从 `logged_in:false` 到 `true` 约 **40 秒、零人工输入**；唯一一次性成本是**首次**在专属浏览器里登录火山（手机验证码或扫码）。
+- **新增环境自检 + 自动安装**（流程第一步，提示词 A1.5）：`scripts/check-env.ps1` 逐项检查并按需自动补
+  Node ≥ 22、`arkcli`（缺则 `npm i -g @volcengine/ark-cli@latest`）、`dsh-chrome-cdp` 插件（缺则 `dsh plugin --profile web add github:xiaobai2017666/dsh-chrome-cdp`）、
+  专属 CDP 浏览器（缺则 `scripts\start-volc-browser.ps1` 拉起）、火山登录态（缺则跑 0 手动登录）。只体检不安装用 `-NoInstall`。
+- **新增 `scripts/cdp/*.mjs`（零第三方依赖）**：改用 Node 22 自带的全局 `WebSocket` 直连 CDP，不再依赖 `ws` / `chrome-remote-interface`。
+  `authorize.mjs`（自动点授权并取码）、`goto.mjs`（只读导航 + 截图）、`click.mjs`（按标签点击）、`inspect.mjs`（标签页与 cookie 域名证据）。
+- **修掉两个会把凭据搞错的坑**：① 取码失败转而读剪贴板时可能拿到**上一轮的旧码** → 服务端报 `state 参数不匹配 (CSRF)`；
+  现在 DOM 与剪贴板两条路径**都强制校验 `state`**。② `logged_in: true` 会被上一轮未过期会话顶成**假阳性** → 判定要同时看 `sts_expires_at_ms` 是否变化。
+- 提示词同步：A1.5 新增自检步骤；B3 三道闸门重写为「① 0 手动 / ② 真人 / ③ CDP 尝试 + 回退」；D3、D4、D5、D6、总流程图与检查点 0 文案一致化。
+
 ## 1.3.0
 
 - **仓库根目录即包根目录**：`npm install <你的仓库地址>` 直接可用（原来插件藏在 `_ppt-maker-plugin/` 子目录里，`dsh` 清单在仓库根找不到）
