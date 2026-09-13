@@ -35,6 +35,7 @@
 
 > 让Agent执行命令：「帮我装 DSH 插件 github:kitterfast/dsh-ppt-maker（profile 用 web），装完重启桌面端」，安装插件后在对话框左下方的加号处可以找到「PPT 制作」
 > 插件地址：https://github.com/kitterfast/dsh-ppt-maker · v1.4.0
+> 首次用「AI 生图」前，若 agent 提示缺组件，让它执行：`%USERPROFILE%\.dsh\local-plugins\dsh-ppt-maker\scripts\check-env.ps1`（会自动补齐 arkcli / 专属自动化浏览器 / `dsh-chrome-cdp` 插件）
 
 或者它自己执行：
 
