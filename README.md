@@ -34,14 +34,16 @@
 把下面这句**原样**交给你的 DSH agent（连仓库地址一起给，它就能自己装）：
 
 > 让Agent执行命令：「帮我装 DSH 插件 github:kitterfast/dsh-ppt-maker（profile 用 web），装完重启桌面端」，安装插件后在对话框左下方的加号处可以找到「PPT 制作」
-> 插件地址：https://github.com/kitterfast/dsh-ppt-maker · v1.4.0
-> 首次用「AI 生图」前，若 agent 提示缺组件，让它执行：`%USERPROFILE%\.dsh\local-plugins\dsh-ppt-maker\scripts\check-env.ps1`（会自动补齐 arkcli / 专属自动化浏览器 / `dsh-chrome-cdp` 插件）
+> 插件地址：https://github.com/kitterfast/dsh-ppt-maker · v1.4.1
+
+**装完就什么都不用管了。** 第一次点「PPT 制作 → A. 使用 AI 生图」时，插件投送的第一条消息里就有第 2 步硬指令：
+让 agent 自己跑 `scripts\check-env.ps1`（缺 arkcli／缺插件／缺浏览器／没登录，它都自己补）。**只有**在"专属浏览器从未登录过火山"这一种情况下，才会需要你本人用手机验证码或扫码登录**一次**。
 
 或者它自己执行：
 
 ```powershell
 dsh plugin --profile web add github:kitterfast/dsh-ppt-maker          # 跟随 main（永远最新）
-dsh plugin --profile web add github:kitterfast/dsh-ppt-maker#v1.4.0   # 固定 v1.4.0（可复现）
+dsh plugin --profile web add github:kitterfast/dsh-ppt-maker#v1.4.1   # 固定 v1.4.1（可复现）
 ```
 
 `dsh plugin add` 会把参数转发给 profile 目录下的 pnpm。仓库里已经声明了 `dsh.bundle.patch` 与 `dsh.client`，

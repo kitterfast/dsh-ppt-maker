@@ -103,21 +103,13 @@ Say 'note' 'the 0-manual login does NOT depend on this plugin: scripts/cdp/*.mjs
 
 Write-Host ''
 Write-Host '=== 4/5 automation browser (CDP) ==='
+# Reported only. The browser is started LAZILY, and only when the login below
+# actually needs it: an already-logged-in run opens no window at all.
 $probe = node -e "fetch('http://127.0.0.1:$Port/json/version').then(r=>r.json()).then(j=>console.log('OK '+j.Browser)).catch(()=>{console.log('DOWN');process.exit(1)})" 2>&1
 if ($probe -like 'OK*') {
   Say 'ok' "CDP endpoint alive: $probe"
-} elseif ($NoInstall) {
-  Say 'MISSING' "no CDP endpoint on port $Port - run: scripts\start-volc-browser.ps1"
-  $failures += 'cdp'
 } else {
-  Say 'MISSING' "no CDP endpoint on port $Port - starting scripts\start-volc-browser.ps1"
-  & (Join-Path $root 'start-volc-browser.ps1') -Port $Port | Out-Host
-  $probe = node -e "fetch('http://127.0.0.1:$Port/json/version').then(r=>r.json()).then(j=>console.log('OK '+j.Browser)).catch(()=>{console.log('DOWN');process.exit(1)})" 2>&1
-  if ($probe -like 'OK*') { Say 'ok' "CDP endpoint alive: $probe" }
-  else {
-    Say 'FAIL' 'browser did not come up. A confined sandbox kills GUI processes: switch the session to the full-access permission preset and retry.'
-    $failures += 'cdp'
-  }
+  Say 'idle' "no CDP endpoint on port $Port yet - it is started only if the login below needs it"
 }
 
 Write-Host ''
@@ -127,19 +119,31 @@ if (-not (Test-Path $arkcli)) {
 } else {
   $loggedIn = ((& $arkcli auth status --transform 'logged_in' 2>$null | Out-String).Trim() -eq 'true')
   if ($loggedIn) {
-    Say 'ok' 'logged_in = true'
+    Say 'ok' 'logged_in = true (nothing else to do; no browser window was opened)'
   } elseif ($NoInstall) {
-    Say 'MISSING' 'logged_in = false - run: scripts\volc-0manual-login.ps1'
+    Say 'MISSING' 'logged_in = false - run: scripts\volc-0manual-login.ps1 (it starts the browser itself)'
     $failures += 'login'
   } else {
-    Say 'MISSING' 'logged_in = false - running scripts\volc-0manual-login.ps1'
-    & (Join-Path $root 'volc-0manual-login.ps1') | Out-Host
-    $loggedIn = ((& $arkcli auth status --transform 'logged_in' 2>$null | Out-String).Trim() -eq 'true')
-    if ($loggedIn) { Say 'ok' 'logged_in = true after the zero-manual login' }
-    else {
-      Say 'HUMAN' 'still logged out. If the dedicated browser has never been logged in, the user must log in ONCE (SMS/QR) in that window:'
-      Say 'HUMAN' '        scripts\start-volc-browser.ps1  (opens the login page) - then re-run this script'
-      $failures += 'login'
+    if ($probe -notlike 'OK*') {
+      Say 'MISSING' "starting the automation browser (the login needs it): scripts\start-volc-browser.ps1"
+      & (Join-Path $root 'start-volc-browser.ps1') -Port $Port | Out-Host
+      $probe = node -e "fetch('http://127.0.0.1:$Port/json/version').then(r=>r.json()).then(j=>console.log('OK '+j.Browser)).catch(()=>{console.log('DOWN');process.exit(1)})" 2>&1
+      if ($probe -like 'OK*') { Say 'ok' "CDP endpoint alive: $probe" }
+      else {
+        Say 'FAIL' 'browser did not come up. A confined sandbox kills GUI processes: switch the session to the full-access permission preset and retry.'
+        $failures += 'cdp'
+      }
+    }
+    if ($failures -notcontains 'cdp') {
+      Say 'MISSING' 'logged_in = false - running scripts\volc-0manual-login.ps1 (zero-manual)'
+      & (Join-Path $root 'volc-0manual-login.ps1') | Out-Host
+      $loggedIn = ((& $arkcli auth status --transform 'logged_in' 2>$null | Out-String).Trim() -eq 'true')
+      if ($loggedIn) { Say 'ok' 'logged_in = true after the zero-manual login' }
+      else {
+        Say 'HUMAN' 'still logged out. If the dedicated browser has never been logged in, the user must log in ONCE (SMS/QR) in that window:'
+        Say 'HUMAN' '        the browser is already open on the login page - then re-run this script'
+        $failures += 'login'
+      }
     }
   }
 }

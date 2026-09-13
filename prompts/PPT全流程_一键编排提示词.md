@@ -134,7 +134,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<插件目录>\scripts\chec
 | **Node ≥ 22** | `scripts/cdp/*.mjs` 用的是 Node **自带的全局 `WebSocket`**（Node 21+ 才有，故要求 22；这样零第三方依赖） | `node -v` | 报告 + 给安装指引（**不许静默降级到装 `ws`**） |
 | **`arkcli`** | 火山方舟通道（生图／模型／用量） | `%APPDATA%\npm\arkcli.cmd --version` | `npm i -g @volcengine/ark-cli@latest` |
 | **`dsh-chrome-cdp` 插件** | 让 agent 拥有原生 `chrome_*` 浏览器工具。**注意：0 手动登录并不依赖它**——`scripts/cdp/*.mjs` 自己直连 CDP | 读 `~\.dsh\profiles\web\package.json` 的 `dsh.profile.bundles` 是否含 `dsh-chrome-cdp` | `dsh plugin --profile web add github:xiaobai2017666/dsh-chrome-cdp`（**装完要重启宿主**才会出现工具） |
-| **专属自动化浏览器（CDP）** | 自动点【授权】/【开通】等页面操作；独立 profile，**不碰用户日常浏览器** | 探 `http://127.0.0.1:9222/json/version` | `scripts\start-volc-browser.ps1` 拉起（受限沙箱会秒杀 GUI 进程 → 需「完全访问」预设，见 A0） |
+| **专属自动化浏览器（CDP）** | 自动点【授权】/【开通】等页面操作；独立 profile，**不碰用户日常浏览器** | 探 `http://127.0.0.1:9222/json/version` | **按需**拉起：只有"确实需要登录"时才由脚本启动；**已登录则一个窗口都不弹**。受限沙箱会秒杀 GUI 进程 → 需「完全访问」预设（见 A0） |
 
 **判定**：脚本最后打印 `[DONE] environment ready` = 全绿，直接继续；
 打印 `[DONE] unresolved: ...` = **把该行原文贴给用户**并停下等答复，不要自己硬猜。
