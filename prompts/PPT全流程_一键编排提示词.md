@@ -124,7 +124,10 @@
 "0 手动登录"依赖下面 4 个组件。**开工先整体体检一遍，缺什么自动装什么**——不要等用到某一步才发现缺、再回头打断用户。
 
 ```powershell
-# <插件目录> = 已安装的 dsh-ppt-maker 目录，例如 %USERPROFILE%\.dsh\local-plugins\dsh-ppt-maker
+# <插件目录> = 已安装的 dsh-ppt-maker 目录，**按顺序取第一份存在的**（不要问用户、也不要让用户去找）：
+#   ① %USERPROFILE%\.dsh\local-plugins\dsh-ppt-maker              ← link: 安装
+#   ② %USERPROFILE%\.dsh\profiles\web\node_modules\dsh-ppt-maker  ← dsh plugin add / pnpm 安装
+# 两份都不存在 → 安装不完整：停下报告，不要自己下载脚本凑
 powershell -NoProfile -ExecutionPolicy Bypass -File "<插件目录>\scripts\check-env.ps1"
 # 只体检、不安装：末尾加 -NoInstall
 ```

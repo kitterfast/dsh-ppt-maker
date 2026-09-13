@@ -2,6 +2,17 @@
 
 版本号写在 `package.json` 与 `lib/client.js` 的 `PLUGIN_VERSION` 两处，校验器会断言两者一致。
 
+## 1.4.2
+
+- **修掉一个会让新装用户第一次就失败的路径 bug**：kickoff 第 2 步（环境自检）原来把脚本路径写死成
+  `%USERPROFILE%\.dsh\local-plugins\dsh-ppt-maker\scripts\check-env.ps1` —— 那只对 `link:` 安装成立；
+  用 `dsh plugin --profile web add github:kitterfast/dsh-ppt-maker`（pnpm）安装时插件落在
+  `%USERPROFILE%\.dsh\profiles\web\node_modules\dsh-ppt-maker`，那条命令会指向不存在的路径。
+- 现在 kickoff 与提示词 A1.5 都改成**按顺序取第一份存在的插件目录**（① `local-plugins` ② `profiles\web\node_modules`），
+  并写明"两份都不存在 → 安装不完整，停下报告，不要自己下载脚本凑"。
+  **不需要用户读任何教程**：只装插件也能跑通。
+- 与提示词里对**提示词文件**的双候选（`PROMPT_CANDIDATES`）对齐 —— 之前只有脚本是单路径，属自身不一致。
+
 ## 1.4.1
 
 - **环境自检写进 kickoff，成为 agent 的硬性第 2 步**（选「A. 使用 AI 生图」时）：
