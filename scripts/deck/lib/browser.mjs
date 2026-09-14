@@ -69,12 +69,12 @@ export function connect(wsUrl, { timeoutMs = 60000 } = {}) {
  * Launch a throwaway headless Chromium and attach one page.
  * Returns { client, sessionId, profileDir, close() }.
  */
-export async function launchHeadless({ width = 1280, height = 720, log = console.log } = {}) {
+export async function launchHeadless({ width = 1280, height = 720, scale = 1, log = console.log } = {}) {
   const browser = findBrowser();
   const profileDir = mkdtempSync(join(tmpdir(), "deck-render-"));
   const args = [
     "--headless=new",
-    "--disable-gpu",
+    "--use-angle=swiftshader",
     "--hide-scrollbars",
     "--no-first-run",
     "--no-default-browser-check",
@@ -142,7 +142,7 @@ export async function launchHeadless({ width = 1280, height = 720, log = console
   await client.call("Page.enable");
   await client.call("Runtime.enable");
   await client.call("Emulation.setDeviceMetricsOverride", {
-    width, height, deviceScaleFactor: 1, mobile: false,
+    width, height, deviceScaleFactor: scale, mobile: false,
   });
 
   return {

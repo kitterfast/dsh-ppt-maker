@@ -187,7 +187,8 @@ if (!structureOnly) {
       "powershell",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PS1,
         "-Pptx", pptx, "-OutJson", jsonPath, "-ShotDir", shotDir,
-        "-Width", String(manifest.width), "-Height", String(manifest.height)],
+        "-Width", String(manifest.width * (manifest.settings?.captureScale ?? 2)),
+        "-Height", String(manifest.height * (manifest.settings?.captureScale ?? 2))],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
     if (ps.stdout) process.stdout.write(ps.stdout);

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * deck-render.mjs 闁?one headless pass over an HTML deck.
  *
  * Fixes three of the four defects measured in the 2026-09-14 run:
@@ -28,6 +28,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { evaluate, launchHeadless, screenshot } from "./lib/browser.mjs";
 
 const args = process.argv.slice(2);
@@ -46,7 +47,7 @@ const W = config.width ?? 1280;
 const H = config.height ?? 720;
 
 /** Bump when the capture logic changes, so stale caches are never reused. */
-const RENDERER_VERSION = "15";
+const RENDERER_VERSION = "22";
 
 /** Hash decides whether a slide can be reused. Config participates, so changing
  *  a delay or a chrome selector invalidates the cache too. */
@@ -98,11 +99,24 @@ async function waitStable(client, { tries = 16, delayMs = 120 } = {}) {
  * not shimmer between frames; index 255 is reserved for transparency so the GIF
  * behaves like the PNG layer it replaces (a layer, not an opaque rectangle).
  */
-function encodeGif(frameBuffers, delayMs, outPath) {
+function encodeGif(frameBuffers, delayMs, outPath, opts = {}) {
   const delayAt = (i) => (Array.isArray(delayMs) ? delayMs[Math.min(i, delayMs.length - 1)] : delayMs);
   const { GIFEncoder, quantize, applyPalette } = require("gifenc");
   const { PNG } = require("pngjs");
   const frames = frameBuffers.map((b) => PNG.sync.read(b));
+  if (opts.opaqueBase) {
+    for (const fr of frames) {
+      for (let p = 0; p < fr.width * fr.height; p++) {
+        const o = p * 4;
+        const a = fr.data[o + 3] / 255;
+        const bx = opts.opaqueBase[o], by = opts.opaqueBase[o + 1], bz = opts.opaqueBase[o + 2];
+        fr.data[o] = Math.round(fr.data[o] * a + bx * (1 - a));
+        fr.data[o + 1] = Math.round(fr.data[o + 1] * a + by * (1 - a));
+        fr.data[o + 2] = Math.round(fr.data[o + 2] * a + bz * (1 - a));
+        fr.data[o + 3] = 255;
+      }
+    }
+  }
   const w = frames[0].width;
   const h = frames[0].height;
   const sample = Buffer.concat(frames.filter((_, i) => i % 2 === 0).map((f) => f.data));
@@ -113,9 +127,10 @@ function encodeGif(frameBuffers, delayMs, outPath) {
     const rgba = new Uint8Array(f.data);
     const idx = applyPalette(rgba, palette255, "rgb565");
     for (let p = 0; p < idx.length; p++) if (rgba[p * 4 + 3] < 128) idx[p] = 255;
-    const opts = { palette, delay: delayAt(i), transparent: true, transparentIndex: 255, dispose: 2 };
+    const enc = { palette, delay: delayAt(i), dispose: 2 };
+    if (!opts.opaqueBase) { enc.transparent = true; enc.transparentIndex = 255; }
     if (i === 0) opts.repeat = 0; // loop forever
-    gif.writeFrame(idx, w, h, opts);
+    gif.writeFrame(idx, w, h, enc);
   });
   gif.finish();
   writeFileSync(outPath, Buffer.from(gif.bytes()));
@@ -199,7 +214,8 @@ const baseQuality = config.baseQuality ?? 88;
 mkdirSync(outDir, { recursive: true });
 const shots = [];
 const t0 = Date.now();
-const browser = await launchHeadless({ width: W, height: H });
+const captureScale = config.captureScale ?? 2;
+const browser = await launchHeadless({ width: W, height: H, scale: captureScale });
 let client = browser.client;
 
 try {
@@ -213,6 +229,15 @@ try {
   await setup(client, config);
   await evaluate(client, `window.__deckRender.ready()`);
   await evaluate(client, `window.__deckRender.freezeScale(); true`);
+
+  // Contract gate: refuse to bake a deck whose animation cannot be mapped
+  // 1:1 (infinite loops and canvas have NO working mechanism in WPS).
+  {
+    const { spawnSync } = await import("node:child_process");
+    const r = spawnSync(process.execPath, [fileURLToPath(new URL("./tools/extract-anim-spec.mjs", import.meta.url)), htmlPath, "--check"], { encoding: "utf8" });
+    if (r.stdout) process.stdout.write(r.stdout);
+    if (r.status !== 0) { if (r.stderr) process.stderr.write(r.stderr); process.exit(1); }
+  }
 
   const total = await evaluate(client, `window.__deckRender.slides().length`);
   if (!total) throw new Error(`no slides matched ${config.slide ?? ".slide"}`);
@@ -332,6 +357,12 @@ try {
       await screenshot(client, config.baseFormat === "jpeg" ? { format: "jpeg", quality: baseQuality } : { format: "png" }),
     );
     await evaluate(client, `window.__restoreBase(); true`);
+    // Layers become OPAQUE, composited in stack order over the base, exactly
+    // like the proven deck. WPS renders alpha PNGs badly (black corners), so the
+    // deck ships with zero alpha anywhere.
+    const sc = captureScale ?? 2;
+    const { PNG: PNG2 } = require("pngjs");
+    const stack = PNG2.sync.read(readFileSync(join(slideDir, baseFile)));
 
     // The animated sub-elements must NOT be baked into the PNG layer: they are
     // drawn by their own GIF on top, and a static copy underneath would ghost.
@@ -368,6 +399,31 @@ try {
       await evaluate(client, `window.__restore(); true`);
       const file = rel(`g${k}.png`);
       writeFileSync(join(outDir, file), png);
+      {
+        const layer = PNG2.sync.read(png);
+        const rw = layer.width, rh = layer.height;
+        const rx = Math.round(clip.x * sc), ry = Math.round(clip.y * sc);
+        const out2 = new PNG2({ width: rw, height: rh });
+        for (let y = 0; y < rh; y++) {
+          const sy = ry + y;
+          if (sy < 0 || sy >= stack.height) continue;
+          for (let x = 0; x < rw; x++) {
+            const sx = rx + x;
+            if (sx < 0 || sx >= stack.width) continue;
+            const o = (y * rw + x) * 4, p = (sy * stack.width + sx) * 4;
+            const al = layer.data[o + 3] / 255;
+            out2.data[o] = Math.round(layer.data[o] * al + stack.data[p] * (1 - al));
+            out2.data[o + 1] = Math.round(layer.data[o + 1] * al + stack.data[p + 1] * (1 - al));
+            out2.data[o + 2] = Math.round(layer.data[o + 2] * al + stack.data[p + 2] * (1 - al));
+            out2.data[o + 3] = 255;
+            stack.data[p] = out2.data[o];
+            stack.data[p + 1] = out2.data[o + 1];
+            stack.data[p + 2] = out2.data[o + 2];
+            stack.data[p + 3] = 255;
+          }
+        }
+        writeFileSync(join(outDir, file), PNG2.sync.write(out2));
+      }
       layerPaths.push({ k, file, clip, bytes: png.length });
     }
 
@@ -391,6 +447,7 @@ try {
       const gifInterval = config.gif?.intervalMs ?? 70;
       const gifLead = config.gif?.leadMs ?? 1500;
       const maxPeriod = config.gif?.maxPeriodMs ?? 6000;
+      const hasCanvasBits = groups.some((g) => (g.bits || []).some((b) => /canvas/i.test(b.tag || "")));
       // Enter WITH the entrance so keyframe loops and the deck's own JS start.
       // Step to a DIFFERENT page first: `go(n)` on the page that is already
       // current is a no-op (the deck compares the index), so the entrance class
@@ -399,7 +456,8 @@ try {
       await evaluate(client, `window.__deckRender.goto(${n === 0 ? 1 : 0}); true`);
       await evaluate(client, `window.__deckRender.gotoAnimated(${n}); true`);
       await evaluate(client, `window.__deckRender.ready()`);
-      await new Promise((r) => setTimeout(r, gifLead));
+      const leadMs = hasCanvasBits ? 0 : gifLead;
+      if (leadMs > 0) await new Promise((r) => setTimeout(r, leadMs));
       await evaluate(client, `window.__deckRender.freezeScale(); true`);
 
       for (const ti of dynIdx) {
@@ -409,8 +467,24 @@ try {
           client,
           `window.__restoreDyn = window.__deckRender.isolate(window.__deckRender.animatedBits(window.__deckRender.groups(window.__deckRender.slides()[${n}])[${target.gk}])[${target.j}]); true`,
         );
+        // ECharts reveals only play once at load; replay them so the GIF
+        // actually captures the per-item pop-in (the successful deck's 2 GIFs
+        // are exactly this).
+        if (/canvas/i.test(target.tag || "")) {
+          const replayed = await evaluate(
+            client,
+            `(function(){ var el = window.__deckRender.animatedBits(window.__deckRender.groups(window.__deckRender.slides()[${n}])[${target.gk}])[${target.j}];
+               return window.__deckRender.replayCharts(el.closest('.slide') || document); })()`,
+          );
+          console.log(`[render] p${n + 1} g${target.gk} bit${target.j}: ${replayed} chart(s) replayed`);
+        }
         await client.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
-        const clip = clipFor(target.box, pad, W, H);
+        const clip = clipFor(
+          /canvas/i.test(target.tag || "") ? { x: target.box.x, y: target.box.y, w: target.box.w, h: target.box.h } : target.box,
+          6,
+          W,
+          H,
+        );
         // Record exactly one period of the slowest infinite animation so the loop
         // is seamless. A fixed 1.7 s clip against a 14 s dash cycle made the line
         // jump on every restart -- the "inexplicable flicker".
@@ -425,7 +499,10 @@ try {
                return JSON.stringify(Math.round(best)); })()`,
           ),
         );
-        const wantMs = Math.min(periodMs > 0 ? periodMs : gifInterval * gifFrames, maxPeriod);
+        const isCanvas = /canvas/i.test(target.tag || "");
+        // A chart's reveal is a one-shot JS animation of ~1.5 s, not a loop.
+        const chartMs = config.gif?.chartMs ?? 6000;
+        const wantMs = isCanvas ? chartMs : Math.min(periodMs > 0 ? periodMs : gifInterval * gifFrames, maxPeriod);
         const framesWanted = Math.max(2, Math.round(wantMs / gifInterval));
         if (periodMs > maxPeriod) {
           console.log(`[render] p${n + 1} g${target.gk} bit${target.j}: 循环周期 ${periodMs}ms 超过上限 ${maxPeriod}ms，录制被截断，接缝可能可见`);
@@ -453,10 +530,34 @@ try {
           // once, say). Keep the crisp PNG layer instead of shipping a
           // pointless multi-frame GIF.
           console.log(`[render] p${n + 1} g${target.gk} bit${target.j}: no motion in ${gifFrames} frames 鈥?keeping the still layer`);
+          await client.call("Emulation.setDefaultBackgroundColorOverride", {});
+          await evaluate(client, `window.__restoreDyn(); true`);
           continue;
         }
         const file = rel(`bit-${target.gk}-${target.j}.gif`);
-        const count = encodeGif(bufs, delays, join(outDir, file));
+        let opaqueBase = null;
+        const { PNG } = require("pngjs");
+        if (/canvas/i.test(target.tag || "")) {
+          // the base image is captured at captureScale; the clip is in logical px
+          const sc = captureScale ?? 2;
+          const basePng = PNG.sync.read(PNG.sync.write(stack));
+          const first = PNG.sync.read(bufs[0]);
+          const wpx = first.width, hpx = first.height;
+          const bx0 = Math.round(clip.x * sc), by0 = Math.round(clip.y * sc);
+          opaqueBase = Buffer.alloc(wpx * hpx * 4);
+          for (let y = 0; y < hpx; y++) {
+            const sy = by0 + y;
+            if (sy < 0 || sy >= basePng.height) continue;
+            for (let x = 0; x < wpx; x++) {
+              const sx = bx0 + x;
+              if (sx < 0 || sx >= basePng.width) continue;
+              const o = (y * wpx + x) * 4, p = (sy * basePng.width + sx) * 4;
+              opaqueBase[o] = basePng.data[p]; opaqueBase[o + 1] = basePng.data[p + 1];
+              opaqueBase[o + 2] = basePng.data[p + 2]; opaqueBase[o + 3] = 255;
+            }
+          }
+        }
+        const count = encodeGif(bufs, delays, join(outDir, file), { opaqueBase });
         const bg = groups[target.gk];
         bg.bits[target.j] = Object.assign({}, bg.bits[target.j], { gif: file, gifFrames: count, gifMoves: true });
         const avg = Math.round(delays.reduce((a, b) => a + b, 0) / delays.length);
@@ -513,6 +614,7 @@ const manifest = {
   settings: {
     chrome: config.chrome ?? [],
     groups: config.groups ?? {},
+    captureScale,
     goto: config.goto ?? "window.__slideInfo.go",
   },
   slides: shots.sort((a, b) => a.index - b.index),

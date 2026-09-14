@@ -2,6 +2,21 @@
 
 版本号写在 `package.json` 与 `lib/client.js` 的 `PLUGIN_VERSION` 两处，校验器会断言两者一致。
 
+## 2.3.0
+
+**把多轮真实跑批的全部经验固化为文档与代码；转换结构对齐"已证实能播"的基准稿。**
+
+- 新增 `docs/经验教训-动画与转换.md`：HTML 契约、转换结构、GIF 烘焙 8 条规则、
+  验收体系（含"能读到 ≠ 会播"与"WPS 是验收播放器"两条铁律）、10 条反模式、已知边界。
+- **图层全部不透明**：按堆叠顺序合成到底图（WPS 渲染 alpha PNG 出黑块/黑角 —— "只黑""缺角"的根因）。
+- **ECharts 图表不再是 GIF**：基准稿解剖证明图表是普通层+错峰入场；只有 THREE 画布烘 GIF。
+- THREE 渲染修复：无头浏览器用 `--use-angle=swiftshader`，**不用 `--disable-gpu`**（会杀死 THREE）。
+- 修复：no-motion 分支遗漏 `restore()` 把隔离状态带入下一页导致崩溃；PNG 导入与底图路径引用。
+- `extract-anim-spec.mjs` 增加 `--check`（契约闸门，渲染前执行）与 `--out=`（UTF-8 无 BOM）。
+- 新增 `tools/calibrate-video.ps1`（PowerPoint 自动播放视频的 XML 基准）与 `tools/gifinfo.mjs`。
+
+## 2.2.0
+
 ## 2.2.0
 
 **"清晰"和"动态"同时保住** —— 动效子元素单独烘焙成小 GIF，文字永远留在无损 PNG 里。

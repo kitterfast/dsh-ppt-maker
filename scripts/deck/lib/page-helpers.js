@@ -47,7 +47,19 @@ window.__deckRender = (function () {
     var picked = [];
     for (var i = 0; i < all.length; i++) {
       var n = all[i];
-      if (n.tagName === 'CANVAS') { picked.push(n); continue; }
+      if (n.tagName === 'CANVAS') {
+        // ECharts canvases are NOT baked (their reveal is one-shot and the
+        // proven deck keeps charts as plain layers). Only THREE canvases
+        // qualify. Skip canvases owned by an echarts instance.
+        var dom = n.parentElement, own = false;
+        for (var up = 0; up < 4 && dom; up++) {
+          try { if (window.echarts && window.echarts.getInstanceByDom(dom)) { own = true; break; } } catch (e) {}
+          dom = dom.parentElement;
+        }
+        if (own) continue;
+        picked.push(n);
+        continue;
+      }
       var an = n.getAnimations ? n.getAnimations({ subtree: false }) : [];
       for (var a = 0; a < an.length; a++) {
         var t = an[a].effect && an[a].effect.getTiming ? an[a].effect.getTiming() : {};
@@ -66,6 +78,34 @@ window.__deckRender = (function () {
       for (var j = 0; j < b.length; j++) out.push(b[j]);
     }
     return out;
+  }
+
+
+  /* ECharts plays its per-item reveal ONCE at page load; afterwards the chart
+     sits at the final state and any later recording sees "no motion". Re-run
+     the entry animation right before recording. */
+  function replayCharts(slideEl) {
+    if (!window.echarts) return 0;
+    var n = 0;
+    var cs = slideEl.querySelectorAll('canvas');
+    for (var i = 0; i < cs.length; i++) {
+      // ECharts 5 wraps the canvas in an inner div, so walk UP until the
+      // element that echarts.init() was called with is found.
+      var dom = cs[i];
+      try {
+        for (var up = 0; up < 4 && dom; up++) {
+          var c = window.echarts.getInstanceByDom(dom);
+          if (c) break;
+          dom = dom.parentElement;
+        }
+        if (!c) continue;
+        var o = c.getOption();
+        c.clear();
+        c.setOption(o);
+        n++;
+      } catch (e) {}
+    }
+    return n;
   }
 
   function hideEls(list) {
@@ -136,7 +176,7 @@ window.__deckRender = (function () {
 
   return {
     setCfg: setCfg, styleOnce: styleOnce, freezeScale: freezeScale,
-    slides: slides, groups: groups, isolate: isolate, hideAll: hideAll, box: box, inkBox: inkBox, describe: describe, animatedBits: animatedBits, animatedBitsOf: animatedBitsOf,
+    slides: slides, groups: groups, isolate: isolate, hideAll: hideAll, box: box, inkBox: inkBox, describe: describe, animatedBits: animatedBits, animatedBitsOf: animatedBitsOf, replayCharts: replayCharts,
     ready: function () {
       var imgs = Array.prototype.slice.call(document.images).filter(function (i) { return !i.complete; });
       return document.fonts.ready.then(function () {

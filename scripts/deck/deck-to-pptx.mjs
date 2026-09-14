@@ -34,6 +34,34 @@ const projectRoot = dirname(configPath);
 const outDir = resolve(projectRoot, config.out ?? "render");
 const manifest = JSON.parse(readFileSync(join(outDir, "manifest.json"), "utf8"));
 
+// --- animation spec: read, never guess -------------------------------------
+// Layer count / delay / translate / rotate / duration come from what the HTML
+// actually declares. A config value is only a fallback for decks that predate
+// the contract.
+const specPath = resolve(projectRoot, config.animSpec ?? "anim-spec.json");
+const spec = existsSync(specPath) ? JSON.parse(readFileSync(specPath, "utf8")) : null;
+const kf = spec?.keyframes?.find((k) => k.name === "rise") ?? spec?.keyframes?.[0] ?? null;
+const tf = (props, fn) => {
+  const t = props?.transform ?? "";
+  const m = new RegExp(fn + "\\(\\s*(-?[\\d.]+)\\s*(px|deg|turn)?", "i").exec(t);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  const unit = (m[2] || (fn === "rotate" ? "deg" : "px")).toLowerCase();
+  return unit === "turn" ? (fn === "rotate" ? n * 360 : n * 1280) : n;
+};
+const specMoveY = kf ? Math.abs(tf(kf.from, "translateY") ?? config.groups?.moveY ?? 14) : null;
+const specRotDeg = kf ? tf(kf.from, "rotate") : null;
+const specDuration = spec?.entranceRules?.find((r) => r.durationMs)?.durationMs ?? null;
+const specLayerDelays = (() => {
+  if (!spec?.entranceRules?.length) return null;
+  const out = [];
+  for (const r of spec.entranceRules) {
+    const m = /\.a(\d+)\s*$/.exec(r.selector.replace(/\s+/g, " ").trim());
+    if (m && !r.infinite) out[Number(m[1]) - 1] = r.delayMs;
+  }
+  return out.filter((x) => x !== undefined).length ? out : null;
+})();
+
 // 12192000 EMU / 1280 px == 6858000 EMU / 720 px == 9525 EMU per px  ->  px/96 inch.
 const SLIDE_W_EMU = 12192000;
 const SLIDE_H_EMU = 6858000;
@@ -301,17 +329,18 @@ for (let i = 0; i < slideNames.length; i++) {
   }
   if (!byName.has("base")) throw new Error(`${name}: no picture named base`);
 
-  const moveFrac = (config.groups?.moveY ?? 14) / manifest.height;
+  const moveFrac = (specMoveY ?? config.groups?.moveY ?? 14) / manifest.height;
   const easing = config.groups?.easing ?? [0.22, 0.61, 0.36, 1];
-  const durationMs = config.groups?.duration ?? 500;
+  const rotFrom = specRotDeg ? Math.round(specRotDeg * 60000) : null;
+  const durationMs = specDuration ?? config.groups?.duration ?? 500;
   const effects = [];
   for (const g of slide.groups) {
-    effects.push({ spid: byName.get(`g${g.k}`), delayMs: g.delayMs, moveFrac, easing, durationMs });
+    effects.push({ spid: byName.get(`g${g.k}`), delayMs: specLayerDelays?.[g.k] ?? g.delayMs, moveFrac, easing, durationMs, rotFrom });
     (g.bits || []).forEach((b, j) => {
       if (!b.gif) return;
       const spid = byName.get(`g${g.k}b${j}`);
       if (spid === undefined) throw new Error(`${name}: no picture named g${g.k}b${j}`);
-      effects.push({ spid, delayMs: g.delayMs, moveFrac, easing, durationMs });
+      effects.push({ spid, delayMs: specLayerDelays?.[g.k] ?? g.delayMs, moveFrac, easing, durationMs, rotFrom });
     });
   }
   effects.sort((a, b) => a.delayMs - b.delayMs);
