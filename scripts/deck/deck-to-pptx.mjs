@@ -217,11 +217,12 @@ const nextId = () => ++idSeq;
  * no animEffect, copied from what PowerPoint writes for its own Fly In preset.
  * PowerPoint listed those effects but the show never played them.
  */
-function effectPar({ spid, delayMs, moveFrac, easing, durationMs, nodeType }) {
+function effectPar({ spid, delayMs, moveFrac, easing, durationMs, nodeType, rotFrom }) {
   const effectId = nextId();
   const setId = nextId();
   const fadeId = nextId();
   const moveId = nextId();
+  const rotId = nextId();
   const setVis =
     `<p:set><p:cBhvr><p:cTn id="${setId}" dur="1" fill="hold">` +
     `<p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>` +
@@ -238,10 +239,16 @@ function effectPar({ spid, delayMs, moveFrac, easing, durationMs, nodeType }) {
     `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>` +
     `<p:attrNameLst><p:attrName>ppt_y</p:attrName></p:attrNameLst></p:cBhvr>` +
     `<p:tavLst>${yKeyframes(moveFrac, easing)}</p:tavLst></p:anim>`;
-    return (
+    const rot =
+    rotFrom === null || rotFrom === 0
+      ? ""
+      : `<p:animRot from="${rotFrom}" to="0"><p:cBhvr>` +
+        `<p:cTn id="${rotId}" dur="${durationMs}" fill="hold"/>` +
+        `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl></p:cBhvr></p:animRot>`;
+  return (
     `<p:par><p:cTn id="${effectId}" presetID="10" presetClass="entr" presetSubtype="0" fill="hold" grpId="0" nodeType="${nodeType}">` +
     `<p:stCondLst><p:cond delay="${delayMs}"/></p:stCondLst>` +
-    `<p:childTnLst>${setVis}${fade}${move}</p:childTnLst></p:cTn></p:par>`
+    `<p:childTnLst>${setVis}${fade}${move}${rot}</p:childTnLst></p:cTn></p:par>`
   );
 }
 
