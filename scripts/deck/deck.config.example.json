@@ -1,0 +1,41 @@
+{
+  "_comment": "复制到你的项目里改名 deck.config.json，把下面几处改成你自己稿子的选择器。",
+
+  "html": "build/我的演示稿.html",
+  "out": "build/render",
+  "pptx": "build/我的演示稿.pptx",
+  "title": "我的演示稿",
+
+  "width": 1280,
+  "height": 720,
+
+  "slide": ".slide",
+  "page": ".page",
+
+  "_chrome_comment": "只在浏览器里才有意义的东西：翻页按钮/进度条/页码/提示条。列不全就会被烤进 PPT 的每一页。",
+  "chrome": ["#progress", ".nav", ".hintbar"],
+
+  "_goto_comment": "可编程翻页入口，签名必须是 (n, skipAnim)：skipAnim=true 直接落到终态。",
+  "goto": "window.__slideInfo.go",
+
+  "_groups_comment": "逐元素入场的那一层，每个匹配项 = 一个动画图层；delays 照抄 CSS 的 animation-delay（毫秒、绝对时间）。",
+  "groups": {
+    "selector": ".body > *",
+    "delays": [60, 170, 280, 390, 500],
+    "stagger": 110,
+    "duration": 500,
+    "moveY": 14,
+    "easing": [0.22, 0.61, 0.36, 1]
+  },
+
+  "_entrance_comment": "入场效果必须用 PowerPoint 原生预置：2 = Fly In（飞入），presetSubtype 1 = 从下飞入。不要手写 Fade + 自定义位移 —— PowerPoint 会把效果列进动画窗格却永远不播放它（2026-09-14 事故的根因）。",
+  "entrance": { "presetId": 2, "presetSubtype": 1 },
+
+  "transitionMs": 450,
+  "settleMs": 400,
+  "capturePad": 2,
+  "baseFormat": "png",
+
+  "_verify_comment": "逐页像素比对的闸门。超阈值先查原因，不要放宽这里。",
+  "verify": { "maxMeanDiff": 6, "maxBadPixelRatio": 0.02 }
+}

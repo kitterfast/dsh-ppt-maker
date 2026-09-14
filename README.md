@@ -97,6 +97,27 @@ node "$env:USERPROFILE\.dsh\local-plugins\dsh-ppt-maker\_verify\verify-package.m
 
 > 插件**不会**替你改会话权限：这是一次安全边界的决定，只能由你按下。
 
+## HTML → PPTX：自带的确定性管线（v2.0.0 新增）
+
+**为什么有它**：2026-09-14 的真实跑批里，转换是"agent 每次现场写一个转换器"。结果是
+**1 小时 44 分、48 个一次性脚本**，交出来的 PPTX 一页动画都没有、把浏览器翻页按钮烤进了每一页、文字错版。
+
+现在这件事是**插件自带的代码**（`scripts/deck/`），不是每次重新发明：
+
+```powershell
+node scripts\deck\deck-render.mjs build\deck.config.json    # ① 一次无头浏览器 + 真 alpha 图层 + 增量
+node scripts\deck\deck-to-pptx.mjs build\deck.config.json   # ② 按名字定位形状 id + 写原生时间轴
+node scripts\deck\deck-verify.mjs build\deck.config.json    # ③ 结构 + PowerPoint 真机 + 逐页像素
+```
+
+20 页实测：渲染 **41 秒**、生成 **3 秒**、验收 **~12 秒**；三道闸门全过
+（逐页像素 mean 0.02–0.96 / 255，19 页 0 个坏像素）。详见
+[`scripts/deck/README.md`](scripts/deck/README.md)。
+
+代价说清楚：**版式与文字一起栅格化**（跨引擎搬运坐标必然错版，这是上一轮的病根），
+所以 PPT 里的文字不能直接改；文字已写进**备注页**与**图片替换文字**。
+**无限循环动效**（CSS `infinite`）无法用 PowerPoint 时间轴表达，管线会**检测并警告**具体是哪几页哪几层。
+
 ## 目录结构
 
 ```
@@ -106,6 +127,9 @@ node "$env:USERPROFILE\.dsh\local-plugins\dsh-ppt-maker\_verify\verify-package.m
 ├─ lib/index.js                 node 半边：空功能 + 启动自检自带提示词是否在，写一行日志
 ├─ lib/client.js                客户端半边：菜单项 + 二级选择 + 发一条 kickoff
 ├─ prompts/PPT全流程_一键编排提示词.md   ← 插件的全部载荷（唯一来源，不要复制第二份）
+├─ scripts/deck/                HTML→PPTX 确定性管线（渲染 / 生成 / 验收 + 工具）
+├─ scripts/check-env.ps1        环境自检（Node / arkcli / CDP 浏览器 / 登录态）
+├─ scripts/cdp/                 零依赖 CDP 客户端（0 手动登录用）
 ├─ docs/已删除的机制说明.md       设计边界与"为什么不做那些事"的留档
 ├─ _verify/verify-package.mjs    源完整性 / 可发布性 / 提示词载荷 / 安装一致性
 ├─ _verify/verify-client-bundle.mjs  客户端 bundle 的真实行为（含全部降级分支）
