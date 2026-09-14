@@ -91,6 +91,20 @@ for (const slide of manifest.slides) {
       objectName: `g${g.k}`,
       altText: g.text || `slide ${slide.page} layer ${g.k}`,
     });
+    // Animated sub-elements (dashed flow, waveform) ride on top of their parent
+    // layer as their own looping GIF, so the surrounding text stays lossless.
+    (g.bits || []).forEach((b, j) => {
+      if (!b.gif || !existsSync(join(outDir, b.gif))) return;
+      s.addImage({
+        path: join(outDir, b.gif),
+        x: inch(b.box.x),
+        y: inch(b.box.y),
+        w: inch(b.box.w),
+        h: inch(b.box.h),
+        objectName: `g${g.k}b${j}`,
+        altText: b.text || `slide ${slide.page} bit ${g.k}.${j}`,
+      });
+    });
   }
 
   const notes = [
@@ -290,9 +304,17 @@ for (let i = 0; i < slideNames.length; i++) {
   const moveFrac = (config.groups?.moveY ?? 14) / manifest.height;
   const easing = config.groups?.easing ?? [0.22, 0.61, 0.36, 1];
   const durationMs = config.groups?.duration ?? 500;
-  const effects = slide.groups
-    .map((g) => ({ spid: byName.get(`g${g.k}`), delayMs: g.delayMs, moveFrac, easing, durationMs }))
-    .sort((a, b) => a.delayMs - b.delayMs);
+  const effects = [];
+  for (const g of slide.groups) {
+    effects.push({ spid: byName.get(`g${g.k}`), delayMs: g.delayMs, moveFrac, easing, durationMs });
+    (g.bits || []).forEach((b, j) => {
+      if (!b.gif) return;
+      const spid = byName.get(`g${g.k}b${j}`);
+      if (spid === undefined) throw new Error(`${name}: no picture named g${g.k}b${j}`);
+      effects.push({ spid, delayMs: g.delayMs, moveFrac, easing, durationMs });
+    });
+  }
+  effects.sort((a, b) => a.delayMs - b.delayMs);
 
   xml = xml.replace(/<p:timing>[\s\S]*?<\/p:timing>/g, "");
   xml = xml.replace(/<mc:AlternateContent>[\s\S]*?<\/mc:AlternateContent>/g, "");

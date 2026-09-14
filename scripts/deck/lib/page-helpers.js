@@ -38,6 +38,36 @@ window.__deckRender = (function () {
     return Array.prototype.slice.call(slideEl.querySelectorAll(CFG.groups.selector));
   }
 
+
+  /* Innermost elements that keep moving: infinite CSS animation on the element
+     itself, or a <canvas> (script-driven). These get baked on their own so the
+     text around them can stay a lossless PNG. */
+  function animatedBits(el) {
+    var all = el.querySelectorAll('*');
+    var picked = [];
+    for (var i = 0; i < all.length; i++) {
+      var n = all[i];
+      if (n.tagName === 'CANVAS') { picked.push(n); continue; }
+      var an = n.getAnimations ? n.getAnimations({ subtree: false }) : [];
+      for (var a = 0; a < an.length; a++) {
+        var t = an[a].effect && an[a].effect.getTiming ? an[a].effect.getTiming() : {};
+        if (t.iterations === Infinity) { picked.push(n); break; }
+      }
+    }
+    return picked.filter(function (n) {
+      return !picked.some(function (m) { return m !== n && m.contains(n); });
+    });
+  }
+
+  function animatedBitsOf(slideEl) {
+    var out = [], gs = groups(slideEl);
+    for (var i = 0; i < gs.length; i++) {
+      var b = animatedBits(gs[i]);
+      for (var j = 0; j < b.length; j++) out.push(b[j]);
+    }
+    return out;
+  }
+
   function hideEls(list) {
     var prev = [];
     for (var i = 0; i < list.length; i++) {
@@ -106,7 +136,7 @@ window.__deckRender = (function () {
 
   return {
     setCfg: setCfg, styleOnce: styleOnce, freezeScale: freezeScale,
-    slides: slides, groups: groups, isolate: isolate, hideAll: hideAll, box: box, inkBox: inkBox, describe: describe,
+    slides: slides, groups: groups, isolate: isolate, hideAll: hideAll, box: box, inkBox: inkBox, describe: describe, animatedBits: animatedBits, animatedBitsOf: animatedBitsOf,
     ready: function () {
       var imgs = Array.prototype.slice.call(document.images).filter(function (i) { return !i.complete; });
       return document.fonts.ready.then(function () {

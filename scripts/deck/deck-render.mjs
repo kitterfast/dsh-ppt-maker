@@ -46,7 +46,7 @@ const W = config.width ?? 1280;
 const H = config.height ?? 720;
 
 /** Bump when the capture logic changes, so stale caches are never reused. */
-const RENDERER_VERSION = "10";
+const RENDERER_VERSION = "15";
 
 /** Hash decides whether a slide can be reused. Config participates, so changing
  *  a delay or a chrome selector invalidates the cache too. */
@@ -99,6 +99,7 @@ async function waitStable(client, { tries = 16, delayMs = 120 } = {}) {
  * behaves like the PNG layer it replaces (a layer, not an opaque rectangle).
  */
 function encodeGif(frameBuffers, delayMs, outPath) {
+  const delayAt = (i) => (Array.isArray(delayMs) ? delayMs[Math.min(i, delayMs.length - 1)] : delayMs);
   const { GIFEncoder, quantize, applyPalette } = require("gifenc");
   const { PNG } = require("pngjs");
   const frames = frameBuffers.map((b) => PNG.sync.read(b));
@@ -112,7 +113,7 @@ function encodeGif(frameBuffers, delayMs, outPath) {
     const rgba = new Uint8Array(f.data);
     const idx = applyPalette(rgba, palette255, "rgb565");
     for (let p = 0; p < idx.length; p++) if (rgba[p * 4 + 3] < 128) idx[p] = 255;
-    const opts = { palette, delay: delayMs, transparent: true, transparentIndex: 255, dispose: 2 };
+    const opts = { palette, delay: delayAt(i), transparent: true, transparentIndex: 255, dispose: 2 };
     if (i === 0) opts.repeat = 0; // loop forever
     gif.writeFrame(idx, w, h, opts);
   });
@@ -277,9 +278,29 @@ try {
       g.easing = config.groups?.easing ?? [0.22, 0.61, 0.36, 1];
     });
 
+    // Describe the animated sub-elements of every group, so the crisp PNG layer
+    // can be captured WITHOUT them and each one can be baked as its own GIF.
+    const __rawBits = await evaluate(
+        client,
+        `(function(){ var s = window.__deckRender.slides()[${n}];
+           var gs = window.__deckRender.groups(s);
+           // The loop animations only exist while .anim is applied (the same
+           // trap as the permanent-motion probe): without it every getAnimations()
+           // call returns nothing and no animated sub-element is ever found.
+           s.classList.add('anim');
+           var res = JSON.stringify(gs.map(function(g){
+             return window.__deckRender.animatedBitsOf(s).filter(function(b){ return g.contains(b); })
+               .map(function(b){ var d = window.__deckRender.describe(b); var x = window.__deckRender.inkBox(b);
+                 return { box: x, text: d.text, tag: d.cls }; }); }));
+           s.classList.remove('anim'); void s.offsetWidth; return res; })()`,
+      );
+    const bitsPerGroup = JSON.parse(__rawBits);
+
+    groups.forEach((g, k) => { g.bits = bitsPerGroup[k] || []; });
+
     const hash = createHash("sha256")
       .update(deckHash)
-      .update(JSON.stringify({ n, groups: groups.map((g) => [g.box, g.delayMs, g.text]) }))
+      .update(JSON.stringify({ n, groups: groups.map((g) => [g.box, g.delayMs, g.text]), bits: groups.map((g) => (g.bits || []).map((b) => b.box)) }))
       .digest("hex")
       .slice(0, 16);
     const prev = oldByIndex.get(n);
@@ -312,6 +333,13 @@ try {
     );
     await evaluate(client, `window.__restoreBase(); true`);
 
+    // The animated sub-elements must NOT be baked into the PNG layer: they are
+    // drawn by their own GIF on top, and a static copy underneath would ghost.
+    await evaluate(
+      client,
+      `window.__hideBits = window.__deckRender.hideAll(window.__deckRender.animatedBitsOf(window.__deckRender.slides()[${n}])); true`,
+    );
+
     // --- one true-alpha PNG per animation group
     const layerPaths = [];
     for (let k = 0; k < groups.length; k++) {
@@ -343,6 +371,8 @@ try {
       layerPaths.push({ k, file, clip, bytes: png.length });
     }
 
+    await evaluate(client, `window.__hideBits(); true`);
+
     // --- permanent motion -> a looping GIF layer ---------------------------
     //
     // A PowerPoint timeline cannot express an endless loop, so any group that
@@ -350,11 +380,17 @@ try {
     // one looping animated GIF instead. PowerPoint plays an animated GIF as a
     // picture, automatically and forever, with no timeline XML involved 闁?which
     // is exactly how the reference deck carries its own motion (2 embedded GIFs).
-    const dynIdx = groups.map((_, k) => k).filter((k) => groups[k].permanent || groups[k].canvas);
+    // Bake the animated sub-elements (dashed flow, waveform) as their own small
+    // looping GIFs. Text never enters a GIF, so type stays crisp while the
+    // motion survives -- crisp AND animated, which is the whole point.
+    const gifTargets = [];
+    groups.forEach((g, k) => (g.bits || []).forEach((b, j) => gifTargets.push({ gk: k, j, box: b.box, text: b.text, tag: b.tag })));
+    const dynIdx = gifTargets.map((_, i) => i);
     if (dynIdx.length && config.gif !== false) {
       const gifFrames = config.gif?.frames ?? 24;
       const gifInterval = config.gif?.intervalMs ?? 70;
       const gifLead = config.gif?.leadMs ?? 1500;
+      const maxPeriod = config.gif?.maxPeriodMs ?? 6000;
       // Enter WITH the entrance so keyframe loops and the deck's own JS start.
       // Step to a DIFFERENT page first: `go(n)` on the page that is already
       // current is a no-op (the deck compares the index), so the entrance class
@@ -366,17 +402,46 @@ try {
       await new Promise((r) => setTimeout(r, gifLead));
       await evaluate(client, `window.__deckRender.freezeScale(); true`);
 
-      for (const k of dynIdx) {
+      for (const ti of dynIdx) {
+        const target = gifTargets[ti];
+        if (!target || !target.box) continue;
         await evaluate(
           client,
-          `window.__restoreDyn = window.__deckRender.isolate(window.__deckRender.groups(window.__deckRender.slides()[${n}])[${k}]); true`,
+          `window.__restoreDyn = window.__deckRender.isolate(window.__deckRender.animatedBits(window.__deckRender.groups(window.__deckRender.slides()[${n}])[${target.gk}])[${target.j}]); true`,
         );
         await client.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
-        const clip = clipFor(groups[k].box, pad, W, H);
+        const clip = clipFor(target.box, pad, W, H);
+        // Record exactly one period of the slowest infinite animation so the loop
+        // is seamless. A fixed 1.7 s clip against a 14 s dash cycle made the line
+        // jump on every restart -- the "inexplicable flicker".
+        const periodMs = JSON.parse(
+          await evaluate(
+            client,
+            `(function(){ var s = window.__deckRender.slides()[${n}]; var best = 0;
+               window.__deckRender.groups(s).forEach(function(g){
+                 (g.getAnimations ? g.getAnimations({subtree:true}) : []).forEach(function(a){
+                   var t = a.effect && a.effect.getTiming ? a.effect.getTiming() : {};
+                   if (t.iterations === Infinity && t.duration > best) best = t.duration; }); });
+               return JSON.stringify(Math.round(best)); })()`,
+          ),
+        );
+        const wantMs = Math.min(periodMs > 0 ? periodMs : gifInterval * gifFrames, maxPeriod);
+        const framesWanted = Math.max(2, Math.round(wantMs / gifInterval));
+        if (periodMs > maxPeriod) {
+          console.log(`[render] p${n + 1} g${target.gk} bit${target.j}: 循环周期 ${periodMs}ms 超过上限 ${maxPeriod}ms，录制被截断，接缝可能可见`);
+        }
         const bufs = [];
-        for (let f = 0; f < gifFrames; f++) {
+        const delays = [];
+        for (let f = 0; f < framesWanted; f++) {
+          const t0 = Date.now();
           bufs.push(await screenshot(client, { format: "png", clip }));
-          await new Promise((r) => setTimeout(r, gifInterval));
+          const spent = Date.now() - t0;
+          // The screenshot itself costs ~90 ms. Sleeping a fixed 70 ms on top made
+          // the real spacing ~160 ms while the GIF declared 70 ms, so playback ran
+          // ~2.3x too fast. Sleep only the remainder and record the real spacing.
+          const wait = Math.max(0, gifInterval - spent);
+          delays.push(spent + wait);
+          if (f < framesWanted - 1) await new Promise((r) => setTimeout(r, wait));
         }
         await client.call("Emulation.setDefaultBackgroundColorOverride", {});
         await evaluate(client, `window.__restoreDyn(); true`);
@@ -387,16 +452,15 @@ try {
           // Flagged as dynamic but nothing actually moved (a <canvas> painted
           // once, say). Keep the crisp PNG layer instead of shipping a
           // pointless multi-frame GIF.
-          groups[k].gifMoves = false;
-          console.log(`[render] p${n + 1} g${k}: no motion in ${gifFrames} frames 鈥?keeping the still layer`);
+          console.log(`[render] p${n + 1} g${target.gk} bit${target.j}: no motion in ${gifFrames} frames 鈥?keeping the still layer`);
           continue;
         }
-        const file = rel(`g${k}.gif`);
-        const count = encodeGif(bufs, gifInterval, join(outDir, file));
-        groups[k].gif = file;
-        groups[k].gifFrames = count;
-        groups[k].gifMoves = true;
-        console.log(`[render] p${n + 1} g${k}: ${count}-frame looping GIF -> ${file}`);
+        const file = rel(`bit-${target.gk}-${target.j}.gif`);
+        const count = encodeGif(bufs, delays, join(outDir, file));
+        const bg = groups[target.gk];
+        bg.bits[target.j] = Object.assign({}, bg.bits[target.j], { gif: file, gifFrames: count, gifMoves: true });
+        const avg = Math.round(delays.reduce((a, b) => a + b, 0) / delays.length);
+        console.log(`[render] p${n + 1} g${target.gk} bit${target.j} (${target.tag}): ${count} frames @${avg}ms period=${periodMs || "n/a"}ms -> ${file}`);
       }
       // leave the page in its terminal state for whatever comes next
       await evaluate(client, `window.__deckRender.goto(${n}); true`);
@@ -412,6 +476,7 @@ try {
       height: H,
       groups: groups.map((g, k) => ({
         k,
+        bits: g.bits,
         file: layerPaths[k].file,
         x: layerPaths[k].clip.x,
         y: layerPaths[k].clip.y,

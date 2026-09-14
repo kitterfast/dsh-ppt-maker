@@ -72,7 +72,8 @@ for (let i = 0; i < slideNames.length; i++) {
 
   const effectCount = (timing.match(/presetClass="entr"/g) ?? []).length;
   const bldCount = (timing.match(/<p:bldP /g) ?? []).length;
-  const groupCount = slide.groups.length;
+  const groupCount =
+    slide.groups.length + slide.groups.reduce((n, g) => n + (g.bits || []).filter((b) => b.gif).length, 0);
   if (effectCount !== groupCount) fail(`p${i + 1}: ${effectCount} effects but manifest has ${groupCount} layers`);
   if (bldCount !== effectCount) fail(`p${i + 1}: bldP ${bldCount} != effects ${effectCount}`);
 
@@ -83,7 +84,15 @@ for (let i = 0; i < slideNames.length; i++) {
   const visSets = (timing.match(/style\.visibility/g) ?? []).length;
   if (visSets !== effectCount) fail(`p${i + 1}: ${visSets} visibility sets != ${effectCount} effects`);
 
-  const animatedNames = slide.groups.map((g) => byName(pics, g.k)).filter(Boolean);
+  const animatedNames = [];
+  for (const g of slide.groups) {
+    const main = byName(pics, g.k);
+    if (main) animatedNames.push(main);
+    (g.bits || []).forEach((bit, j) => {
+      if (!bit.gif) return;
+      for (const [id, nm] of pics) if (nm === `g${g.k}b${j}`) animatedNames.push({ id, name: nm });
+    });
+  }
   structure.push({ slide: i + 1, effectCount, targets: animatedNames });
 }
 function byName(pics, k) {
@@ -216,7 +225,10 @@ if (!structureOnly) {
           if (zero.length) fail(`p${entry.slide}: ${zero.length} effect(s) have no duration`);
         }
         const total = com.timeline.reduce((a, t) => a + t.count, 0);
-        const wantTotal = manifest.slides.reduce((a, s) => a + s.groups.length, 0);
+        const wantTotal = manifest.slides.reduce(
+          (a, s) => a + s.groups.length + s.groups.reduce((n, g) => n + (g.bits || []).filter((b) => b.gif).length, 0),
+          0,
+        );
         if (total !== wantTotal) fail(`PowerPoint parsed ${total} effects, manifest has ${wantTotal} layers`);
         else pass(`${total} entrance effects parsed by PowerPoint, all attached to the expected pictures`);
       }
