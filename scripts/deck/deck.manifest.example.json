@@ -1,0 +1,28 @@
+{
+  "_comment": "deck.manifest v1 样例。只声明 HTML 表达不了或反解有歧义的信息；其余一律不写，由 DOM 决定。本样例演示三种声明类别，实际使用时通常只需 version + capturePad。",
+  "version": 1,
+  "capturePad": 10,
+
+  "_stage_comment": "仅在反解无法唯一确定画布尺寸时才写。",
+  "stage": { "width": 1280, "height": 720 },
+
+  "_slides_comment": "仅在反解有歧义的页/层上写。已声明字段必须与 DOM 精确一致，不一致直接 FAIL。",
+  "slides": [
+    {
+      "index": 7,
+      "layers": [
+        {
+          "cls": "a4",
+          "delayMs": 370,
+          "members": [".cols2 > div.a4", "#threeAI"],
+          "_members_comment": "精确集合：多一个、少一个、或选择器解析不到元素，均 FAIL。"
+        }
+      ]
+    }
+  ],
+
+  "_motion_comment": "运行期动效。owner 必须在 DOM 中；kind 必须与运行期事实一致；loopMs 用于定帧数与时长。若不写 motion 字段=未声明，回退运行期探测；若写空数组=显式声明无动效，运行期发现 canvas 在动即 FAIL。",
+  "motion": [
+    { "slide": 7, "owner": "#threeAI", "kind": "canvas", "loopMs": 6000 }
+  ]
+}

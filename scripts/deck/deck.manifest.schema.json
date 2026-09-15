@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kitterfast/dsh-ppt-maker/scripts/deck/deck.manifest.schema.json",
+  "title": "deck.manifest v1 — 补丁式声明",
+  "description": "只声明 HTML 表达不了、或反解有歧义的信息。能从 HTML 无歧义推导的一律不要求声明。声明按字段生效；未声明字段回退反解。同一字段最多一个来源（内嵌 vs sidecar 冲突即 FAIL）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "capturePad"],
+  "properties": {
+    "version": { "const": 1, "description": "schema 版本，必填" },
+    "capturePad": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "PPT 侧图层内边距（每边像素）。HTML 表达不了，必填。"
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "仅在反解无法唯一确定画布尺寸时需要声明。",
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "slides": {
+      "type": "array",
+      "description": "仅在反解有歧义的页/层上声明；未声明的页与层回退 DOM。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": { "type": "integer", "minimum": 1, "description": "1 起页序；已声明必须与 DOM 一致" },
+          "layers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cls": { "type": "string", "description": "该层在 DOM 上的类名；已声明必须与 DOM 精确一致" },
+                "delayMs": { "type": "number", "minimum": 0, "description": "该层入场延迟（绝对值，毫秒）；已声明必须与 DOM 一致" },
+                "members": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string" },
+                  "description": "构成该层的元素选择器，精确集合；少一项、多一项、解析不到元素均 FAIL。"
+                },
+                "intent": {
+                  "const": "merge",
+                  "description": "层合并意图。HTML 表达不了，因此以声明为准；但不得与 DOM 事实冲突。仅在 G6 通过后才允许出现在生产 manifest。"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "motion": {
+      "type": "array",
+      "description": "运行期动效。字段缺失=未声明，回退运行期探测；字段存在但为空或无该页条目=显式声明该页无动效，此时运行期若发现 canvas 在动即 FAIL。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slide", "owner", "kind", "loopMs"],
+        "properties": {
+          "slide": { "type": "integer", "minimum": 1 },
+          "owner": { "type": "string", "description": "必须是 DOM 中真实存在的 .aN 宿主元素选择器" },
+          "kind": { "enum": ["canvas", "css"], "description": "必须与运行期事实一致" },
+          "loopMs": { "type": "number", "exclusiveMinimum": 0, "description": "循环周期，以声明为准，用于定帧数与时长" }
+        }
+      }
+    }
+  }
+}

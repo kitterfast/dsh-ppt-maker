@@ -2,6 +2,29 @@
 
 版本号写在 `package.json` 与 `lib/client.js` 的 `PLUGIN_VERSION` 两处，校验器会断言两者一致。
 
+## 2.5.0 (2026-09-15)
+
+### 新增（独立模块，未激活）
+- lib/manifest.mjs：声明层核心模块
+- deck.manifest.schema.json：schema（已冻结）
+- deck.manifest.example.json：样例
+- tools/validate-manifest.mjs：校验器 + 歧义报告器
+- tools/g2-test.mjs：G2 负例套件（6/6 PASS）
+
+### 说明
+- 本版本为独立模块交付，声明路径未接入 deck-render.mjs。
+- 无声明路径行为与 2.4.0 逐字节相同。
+- 渲染核心 8 项指纹改前/改后全等（G5 PASS）。
+- 声明路径激活留待 2.6.0。
+
+### 验证
+- G2 负例 6/6 PASS
+- G5 指纹 8 项全等
+- 4 项验证工具自测通过（gate-a/b/d-proxy/e）
+
+### 未验证
+- 声明路径完全未激活，无运行时验证。
+
 ## 2.4.0 (2026-09-15)
 
 **按基准稿的真实结构重做分层与延迟：图片 79->67、效果 68->56、延迟改绝对值、图层改真透明。**
