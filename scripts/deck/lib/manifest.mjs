@@ -46,6 +46,8 @@ export const ERR = {
   MOTION_KIND: "E_MOTION_KIND",
   MOTION_ABSENT_BUT_MOVING: "E_MOTION_DECLARED_NONE_BUT_MOVING",
   MEMBERS_MISSING: "E_MEMBERS_NOT_IN_DOM",
+  SLIDE_NOT_FOUND: "E_SLIDE_NOT_FOUND",
+  LAYER_BOX_UNRESOLVED: "E_LAYER_BOX_UNRESOLVED",
 };
 
 /** Ambiguity codes produced by the detectors. */
@@ -136,6 +138,7 @@ export function mergeDeclarations(embedded, sidecar) {
         const s = v.slides[i], dest = out.slides[i];
         if (!s || typeof s !== "object") { errors.push({ code: ERR.SHAPE, field: `slides[${i}]`, detail: "not an object" }); continue; }
         if ("index" in s && claim(`slides[${i}].index`, from)) dest.index = s.index;
+        if ("page" in s && claim(`slides[${i}].page`, from)) dest.page = s.page;
         if (!Array.isArray(s.layers)) continue;
         if (dest.layers.length && dest.layers.length !== s.layers.length) {
           errors.push({ code: ERR.SHAPE, field: `slides[${i}].layers`, detail: "array length differs between sources" });
@@ -183,7 +186,15 @@ export function validateDeclaration(merged, { g6Attested = false } = {}) {
   else if (!Number.isInteger(merged.capturePad) || merged.capturePad < 0) errors.push({ code: ERR.SHAPE, field: "capturePad", detail: "must be a non-negative integer" });
   if (merged.stage) for (const k of ["width", "height"]) if (k in merged.stage && (!Number.isInteger(merged.stage[k]) || merged.stage[k] <= 0)) errors.push({ code: ERR.SHAPE, field: `stage.${k}`, detail: "must be a positive integer" });
   for (const [i, s] of (merged.slides ?? []).entries()) {
-    if ("index" in s && (!Number.isInteger(s.index) || s.index < 1)) errors.push({ code: ERR.SHAPE, field: `slides[${i}].index`, detail: "must be an integer >= 1" });
+    // The declaration side is 1-BASED everywhere. `page` is the canonical
+    // field; `index` is kept as a 1-based alias for schema v1. This is NOT the
+    // same thing as the render manifest's slides[].index, which is 0-based —
+    // reusing that number here silently targeted the wrong page.
+    if ("index" in s && (!Number.isInteger(s.index) || s.index < 1)) errors.push({ code: ERR.SHAPE, field: `slides[${i}].index`, detail: "must be an integer >= 1 (1-based page)" });
+    if ("page" in s && (!Number.isInteger(s.page) || s.page < 1)) errors.push({ code: ERR.SHAPE, field: `slides[${i}].page`, detail: "must be an integer >= 1" });
+    if (Number.isInteger(s.index) && Number.isInteger(s.page) && s.index !== s.page) {
+      errors.push({ code: ERR.CONFLICT, field: `slides[${i}]`, detail: `index ${s.index} and page ${s.page} disagree (both are 1-based page numbers)` });
+    }
     for (const [j, L] of (s.layers ?? []).entries()) {
       if ("delayMs" in L && (!Number.isFinite(L.delayMs) || L.delayMs < 0)) errors.push({ code: ERR.SHAPE, field: `slides[${i}].layers[${j}].delayMs`, detail: "must be a number >= 0" });
       if ("intent" in L && L.intent !== INTENT_MERGE) errors.push({ code: ERR.SHAPE, field: `slides[${i}].layers[${j}].intent`, detail: `only "${INTENT_MERGE}" is defined` });
@@ -242,6 +253,108 @@ export function runtimeAmbiguity({ slideIndexOrderUnique, nestedLayerGroups }) {
   return amb;
 }
 
+/**
+ * Resolve a declared slide's target page. The declaration side is 1-BASED:
+ * `page` is canonical, `index` survives as a 1-based alias from schema v1.
+ * This must never be confused with the render manifest's slides[].index,
+ * which is 0-BASED — that confusion is what silently dropped declarations.
+ * Returns { page, via }; page is null when undeclared or self-contradictory.
+ */
+export function declaredPage(s) {
+  const hasPage = Number.isInteger(s?.page);
+  const hasIndex = Number.isInteger(s?.index);
+  if (hasPage && hasIndex && s.page !== s.index) return { page: null, via: "conflict" };
+  if (hasPage) return { page: s.page, via: "page" };
+  if (hasIndex) return { page: s.index, via: "index" };
+  return { page: null, via: null };
+}
+
+const countInto = (arr) => {
+  const c = new Map();
+  for (const v of arr) c.set(v, (c.get(v) ?? 0) + 1);
+  return c;
+};
+
+/** Multiset equality — signatures can repeat, so counting is required. */
+export function sameMultiset(a, b) {
+  if (a.length !== b.length) return false;
+  const c = countInto(a);
+  for (const v of b) {
+    const n = c.get(v) ?? 0;
+    if (!n) return false;
+    c.set(v, n - 1);
+  }
+  return true;
+}
+
+/** Multiset containment: does `sup` contain every element of `sub`? */
+export function containsMultiset(sup, sub) {
+  const c = countInto(sup);
+  for (const v of sub) {
+    const n = c.get(v) ?? 0;
+    if (!n) return false;
+    c.set(v, n - 1);
+  }
+  return true;
+}
+
+/**
+ * Coverage of the ambiguity dimensions that are decidable BEFORE a browser runs.
+ *
+ * Extracted from patchMerge so that loadAndPlan reaches the SAME verdict: a
+ * checker that calls a manifest legal while the renderer refuses it is exactly
+ * the divergence this contract exists to prevent. A_MEMBERS is deliberately
+ * absent here — it needs the DOM; see runtimeUnresolved.
+ */
+export function coversStatic(merged, amb) {
+  const allSlidesFully = (key) =>
+    (merged?.slides ?? []).length > 0 &&
+    merged.slides.every((s) => (s.layers ?? []).length > 0 && s.layers.every((L) => key(L)));
+  // `page` is accepted alongside `index`: both are 1-based page numbers.
+  const table = {
+    [AMB.STAGE]: () => !!(merged?.stage && "width" in merged.stage && "height" in merged.stage),
+    [AMB.INDEX]: () => (merged?.slides ?? []).length > 0 && merged.slides.every((s) => "index" in s || "page" in s),
+    [AMB.CLS]: () => allSlidesFully((L) => "cls" in L),
+    [AMB.DELAY]: () => allSlidesFully((L) => "delayMs" in L),
+  };
+  const resolved = [], unresolved = [];
+  for (const [code, detail] of amb) {
+    if (code === AMB.MEMBERS) continue;
+    if (table[code]?.()) resolved.push(code);
+    else unresolved.push({ code, detail });
+  }
+  return { resolved, unresolved };
+}
+
+/**
+ * Runtime dimensions a DOM pass must decide.
+ *
+ * A_MEMBERS is the only one that cannot be settled on paper: whether members
+ * nest is a property of the rendered DOM. The test below is deliberately
+ * CONSERVATIVE — it reports covered only when every layer of every slide names
+ * its members, which is sufficient but not necessary. Anything weaker is what
+ * let a manifest pass here and be refused by the renderer.
+ */
+export function runtimeUnresolved(merged, pageCount) {
+  const slides = merged?.slides ?? [];
+  // Conservatively sufficient AND checkable on paper: the declaration must
+  // address EVERY page of the deck, and every layer entry it carries must name
+  // members. A single slide entry out of eleven must not read as "fully
+  // declared" — with a one-element every() it did, and the checker then
+  // certified a manifest that leaves ten pages uncovered.
+  const targets = new Set();
+  slides.forEach((s, i) => { const r = declaredPage(s); targets.add(r.page ?? i + 1); });
+  const allPagesDeclared = Number.isInteger(pageCount) && pageCount > 0
+    ? targets.size >= pageCount
+    : slides.length > 0;
+  const everyLayerNamesMembers =
+    slides.length > 0 &&
+    slides.every((s) => (s.layers ?? []).length > 0 && s.layers.every((L) => Array.isArray(L.members) && L.members.length));
+  return allPagesDeclared && everyLayerNamesMembers
+    ? []
+    : [{ code: AMB.MEMBERS, detail: `nested layer membership is only decidable once the DOM is available; cover it on paper by addressing all ${Number.isInteger(pageCount) ? pageCount : "?"} page(s) with members entries on every declared layer, or let the renderer decide` }];
+}
+
 /* ───────────────── patch merge (§7) — the whole point ───────────────────── */
 
 /**
@@ -262,44 +375,124 @@ export function patchMerge({ merged, amb, dom }) {
   const allSlidesFully = (key) =>
     (merged?.slides ?? []).length > 0 &&
     merged.slides.every((s) => (s.layers ?? []).length > 0 && s.layers.every((L) => key(L)));
-  const covers = {
-    [AMB.STAGE]: () => !!(merged?.stage && "width" in merged.stage && "height" in merged.stage),
-    [AMB.INDEX]: () => (merged?.slides ?? []).length > 0 && merged.slides.every((s) => "index" in s),
-    [AMB.CLS]: () => allSlidesFully((L) => "cls" in L),
-    [AMB.DELAY]: () => allSlidesFully((L) => "delayMs" in L),
-    [AMB.MEMBERS]: () => allSlidesFully((L) => Array.isArray(L.members)) || Array.isArray(merged?.motion),
-  };
-  for (const [code, detail] of amb) {
-    if (!covers[code]?.()) errors.push({ code: ERR.AMBIGUOUS_UNDECLARED, field: code, detail });
-    else notes.push(`${code} resolved by declaration`);
-  }
+  // The same function loadAndPlan uses, so the checker and the renderer cannot
+  // reach different verdicts on one manifest. A_MEMBERS is still not decided
+  // here: it depends on a declaration landing on the ambiguous page, which is
+  // only known once the per-page plan below exists.
+  const { resolved: staticOk, unresolved: staticBad } = coversStatic(merged, amb);
+  for (const code of staticOk) notes.push(`${code} resolved by declaration`);
+  for (const u of staticBad) errors.push({ code: ERR.AMBIGUOUS_UNDECLARED, field: u.code, detail: u.detail });
 
-  // 2./5. declared DOM-mapping fields must equal the DOM fact
-  const bySlide = new Map((merged?.slides ?? []).map((s, i) => [s.index ?? i + 1, s]));
+  // 2./5. declared DOM-mapping fields must equal the DOM fact.
+  // A slide declaration is addressed by its 1-BASED page. It is never mapped by
+  // array position in silence, and a page the deck does not have is an error
+  // rather than a declaration that quietly applies to nothing.
+  const bySlide = new Map();
+  (merged?.slides ?? []).forEach((s, i) => {
+    if (!s || typeof s !== "object") return;
+    const r = declaredPage(s);
+    if (r.via === "conflict") return; // already reported by validateDeclaration
+    if (r.page === null) {
+      if (!(s.layers ?? []).length) return;
+      bySlide.set(i + 1, s);
+      notes.push(`slides[${i}] declares no page/index: read as page ${i + 1} by array position`);
+      return;
+    }
+    if (dom.total && (r.page < 1 || r.page > dom.total)) {
+      errors.push({ code: ERR.SLIDE_NOT_FOUND, field: `slides[${i}].${r.via}`, detail: `declared page ${r.page}, but the deck has ${dom.total} page(s)` });
+      return;
+    }
+    if (bySlide.has(r.page)) {
+      errors.push({ code: ERR.CONFLICT, field: `slides[${i}].${r.via}`, detail: `page ${r.page} is declared by more than one slide entry` });
+      return;
+    }
+    bySlide.set(r.page, s);
+  });
   const plan = { slides: new Map(), motion: new Map(), capturePad: merged?.capturePad, stage: merged?.stage ?? null };
+  // Pages where a declaration actually LANDED and carried a members entry.
+  // Coverage is read from this set, never from the declaration text at large.
+  const membersResolvedPages = new Set();
   for (const d of dom.slides) {
     const dec = bySlide.get(d.page);
     const layers = [];
     if (dec?.layers?.length) {
-      if (dec.layers.length !== d.layers.length) {
-        errors.push({ code: ERR.DOM_MISMATCH, field: `slide ${d.page}.layers`, detail: `declared ${dec.layers.length} layer(s), DOM has ${d.layers.length}` });
-      }
-      for (let j = 0; j < dec.layers.length; j++) {
-        const L = dec.layers[j], fact = d.layers[j];
-        if (!fact) continue;
-        if ("cls" in L && L.cls !== fact.cls) errors.push({ code: ERR.DOM_MISMATCH, field: `slide ${d.page}.layer ${j}.cls`, detail: `declared "${L.cls}", DOM "${fact.cls}"` });
-        if ("delayMs" in L && L.delayMs !== fact.delayMs) errors.push({ code: ERR.DOM_MISMATCH, field: `slide ${d.page}.layer ${j}.delayMs`, detail: `declared ${L.delayMs}, DOM ${fact.delayMs}` });
-        // §2: members must not contradict the DOM (a selector that resolves to
-        // nothing, or a set that differs from the DOM layer, is a conflict).
-        if (Array.isArray(L.members) && fact.memberCount !== L.members.length) {
-          errors.push({ code: ERR.DOM_MISMATCH, field: `slide ${d.page}.layer ${j}.members`, detail: `declared ${L.members.length} member(s), DOM layer has ${fact.memberCount}` });
+      // F5 guard: a layer with no element cannot be captured. Letting a null
+      // box through turns a validation failure into an uncaught TypeError in
+      // clipOf, so it is rejected here, before any capture.
+      d.layers.forEach((f, k) => {
+        if (!f || !f.box) {
+          errors.push({ code: ERR.LAYER_BOX_UNRESOLVED, field: `slide ${d.page}.layer ${k}`, detail: `layer "${f?.cls ?? "?"}" has no resolvable element box (${(f?.memberSigs ?? []).length} member element(s))` });
         }
-        layers.push({ ...fact, declared: true, intent: L.intent, members: L.members ?? null });
+      });
+      if (dec?.layers?.length) {
+        // F4: locate each declared layer by the selectors in `members`.
+        const locate = [];
+        for (const [j, L] of dec.layers.entries()) {
+          const where = `slide ${d.page}.layers[${j}]`;
+          if (!Array.isArray(L.members) || !L.members.length) {
+            errors.push({ code: ERR.REQUIRED, field: `${where}.members`, detail: "members is the addressing key: a declared layer must name the selectors that identify it" });
+            continue;
+          }
+          const found = (d.resolved ?? [])[j] ?? [];
+          const badSel = found.filter((r) => r.invalid || r.count === 0);
+          if (badSel.length) {
+            errors.push({ code: ERR.MEMBERS_MISSING, field: `${where}.members`, detail: badSel.map((r) => `${r.invalid ? "invalid selector" : "matched no element"}: ${r.sel}`).join("; ") });
+            continue;
+          }
+          const S = [].concat(...found.map((r) => r.memberSigs ?? [])).sort();
+          const cands = [];
+          d.layers.forEach((f, k) => { if (containsMultiset(f.memberSigs ?? [], S)) cands.push(k); });
+          if (!cands.length) {
+            errors.push({ code: ERR.MEMBERS_MISSING, field: `${where}.members`, detail: `no layer on page ${d.page} contains the declared member set [${S.join(", ")}]` });
+            continue;
+          }
+          if (cands.length > 1) {
+            // Rule 5, kept as a guard. Not reachable while the layering keeps
+            // member signatures disjoint; see u4-c-expected.json.
+            errors.push({ code: ERR.AMBIGUOUS_UNDECLARED, field: `${where}.members`, detail: `declared member set matches ${cands.length} layers on page ${d.page} (layers ${cands.join(",")}): the declaration cannot uniquely locate a layer` });
+            continue;
+          }
+          const k = cands[0], fact = d.layers[k];
+          if (!sameMultiset(fact.memberSigs ?? [], S)) {
+            errors.push({ code: ERR.MEMBERS_MISSING, field: `${where}.members`, detail: `declared member set does not equal the located layer ${k} on page ${d.page}: declared ${S.length} [${S.join(", ")}], layer has ${(fact.memberSigs ?? []).length} [${(fact.memberSigs ?? []).join(", ")}]` });
+            continue;
+          }
+          if ("cls" in L && L.cls !== fact.cls) errors.push({ code: ERR.DOM_MISMATCH, field: `${where}.cls`, detail: `declared "${L.cls}", located layer ${k} has "${fact.cls}"` });
+          if ("delayMs" in L && L.delayMs !== fact.delayMs) errors.push({ code: ERR.DOM_MISMATCH, field: `${where}.delayMs`, detail: `declared ${L.delayMs}, located layer ${k} has ${fact.delayMs}` });
+          locate.push({ k, members: L.members.slice(), delayMs: L.delayMs, intent: L.intent });
+        }
+        if (locate.length) {
+          membersResolvedPages.add(d.page);
+          // D7: ONLY pages that actually carry a located declared layer enter
+          // the plan. Routing an undeclared page into the declared branch gave
+          // every one of its layers an empty member list, hence a null box,
+          // hence a crash at capture time.
+          plan.slides.set(d.page, locate);
+        }
       }
-    } else {
-      layers.push(...d.layers.map((f) => ({ ...f, declared: false })));
     }
-    plan.slides.set(d.page, layers);
+  }
+
+  // A_MEMBERS: every page the runtime detector called ambiguous must have been
+  // resolved by a declaration that landed on THAT page. `motion` does not cover
+  // it — motion describes runtime animation, membership describes which
+  // elements form a layer, and conflating them left the ambiguity unresolved.
+  if (amb.has(AMB.MEMBERS)) {
+    // Coverage is verified against the pages the runtime detector flagged. If the
+    // caller did not supply that list, coverage CANNOT be verified — refuse and
+    // say so. Treating a missing list as "nothing unresolved" is silent
+    // acceptance of a known ambiguity, which the caliber forbids.
+    if (!Array.isArray(dom.nestedPages)) {
+      errors.push({ code: ERR.AMBIGUOUS_UNDECLARED, field: AMB.MEMBERS, detail: `${amb.get(AMB.MEMBERS)}; the caller supplied no ambiguous page list, so membership coverage cannot be verified` });
+    } else {
+      const pages = dom.nestedPages;
+      const unresolved = pages.filter((p) => !membersResolvedPages.has(p));
+      if (unresolved.length) {
+        errors.push({ code: ERR.AMBIGUOUS_UNDECLARED, field: AMB.MEMBERS, detail: `${amb.get(AMB.MEMBERS)}; no landing members declaration for page(s) ${unresolved.join(",")}` });
+      } else {
+        notes.push(`${AMB.MEMBERS} resolved by declaration on page(s) ${pages.join(",")}`);
+      }
+    }
   }
 
   // 3. stated motion must match the runtime fact
@@ -331,6 +524,13 @@ export function loadAndPlan({ htmlPath, htmlText, config, facts, g6Attested = fa
   errors.push(...m.errors);
   errors.push(...validateDeclaration(m.merged, { g6Attested }));
   const amb = staticAmbiguity(facts);
+  // The static verdict comes from the SAME function patchMerge uses. loadAndPlan
+  // previously emitted no E_AMBIGUOUS_UNDECLARED at all, so this checker could
+  // print "needs only version + capturePad" for a deck whose page 7 genuinely
+  // nests its members — and the renderer then refused that manifest.
+  for (const u of coversStatic(m.merged, amb).unresolved) {
+    errors.push({ code: ERR.AMBIGUOUS_UNDECLARED, field: u.code, detail: u.detail });
+  }
   return {
     present: true, errors, merged: m.merged, provenance: m.provenance, amb, plan: null,
     sources: { embedded: embedded.present, sidecar: sidecar.present, sidecarPath: sidecar.path },

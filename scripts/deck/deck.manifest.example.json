@@ -1,28 +1,40 @@
 {
-  "_comment": "deck.manifest v1 样例。只声明 HTML 表达不了或反解有歧义的信息；其余一律不写，由 DOM 决定。本样例演示三种声明类别，实际使用时通常只需 version + capturePad。",
+  "_comment": "deck.manifest v1 样例。只声明 HTML 表达不了、或反解有歧义的信息；其余一律不写，由 DOM 决定。",
   "version": 1,
   "capturePad": 10,
 
-  "_stage_comment": "仅在反解无法唯一确定画布尺寸时才写。",
-  "stage": { "width": 1280, "height": 720 },
+  "_addressing_comment": [
+    "声明侧一律 1-BASED。定位一页用 page（推荐）；index 是等价的 1-based 别名，二者同时出现时必须一致，否则 E_CONFLICT。",
+    "注意：声明侧的 index/page 与输出 manifest 里的 slides[].index 不同义 —— 后者是 0-BASED 数组下标。",
+    "声明指向不存在的页 -> E_SLIDE_NOT_FOUND（不会静默丢弃）。"
+  ],
 
-  "_slides_comment": "仅在反解有歧义的页/层上写。已声明字段必须与 DOM 精确一致，不一致直接 FAIL。",
+  "_layers_comment": [
+    "layers[] 不是按位对齐的列表，顺序无关。每一层靠 members 里的选择器【定位】：",
+    "  1. 用这些选择器在 DOM 里解析出元素集合 S；",
+    "  2. 在运行时分层结果里找哪些层包含 S；",
+    "  3. 恰好一层包含 S -> 该层即被声明的层；",
+    "  4. 多层包含 S -> E_AMBIGUOUS_UNDECLARED（声明无法唯一定位层）；",
+    "  5. S 为空、或某选择器解析不到元素 -> E_MEMBERS_NOT_IN_DOM；",
+    "  6. S 是该层成员集合的真子集 -> 同样 E_MEMBERS_NOT_IN_DOM（声明不全 = 歧义未解决）。",
+    "因此不必声明整页的所有层，只声明有歧义的那一层即可。",
+    "cls / delayMs 是可选的交叉校验：写了就必须与被定位的层一致，不一致即 E_DOM_MISMATCH。"
+  ],
   "slides": [
     {
-      "index": 7,
+      "page": 7,
       "layers": [
         {
-          "cls": "a4",
-          "delayMs": 370,
-          "members": [".cols2 > div.a4", "#threeAI"],
-          "_members_comment": "精确集合：多一个、少一个、或选择器解析不到元素，均 FAIL。"
+          "members": [".a4"],
+          "_members_comment": "slide 7 上带 .a4 的元素恰有两个（外层 div.a4 与其内层 div#threeAI.ai-screen.a4），同类嵌套使成员无法由类规则导出，故须声明。"
         }
       ]
     }
   ],
 
-  "_motion_comment": "运行期动效。owner 必须在 DOM 中；kind 必须与运行期事实一致；loopMs 用于定帧数与时长。若不写 motion 字段=未声明，回退运行期探测；若写空数组=显式声明无动效，运行期发现 canvas 在动即 FAIL。",
-  "motion": [
-    { "slide": 7, "owner": "#threeAI", "kind": "canvas", "loopMs": 6000 }
+  "_motion_comment": [
+    "运行期动效。owner 必须在 DOM 中；kind 必须与运行期事实一致；loopMs 用于定帧数与时长。",
+    "不写 motion = 未声明，回退运行期探测；写空数组 = 显式声明无动效，运行期发现元素在动即 FAIL。",
+    "motion 与 A_MEMBERS 是两个维度：声明 motion 不能覆盖层成员歧义，后者必须由 layers[].members 定位解决。"
   ]
 }

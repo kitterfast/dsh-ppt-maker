@@ -9,12 +9,27 @@
  *      which fields a manifest for that deck would be REQUIRED to declare.
  *
  * Usage:
- *   node tools/validate-manifest.mjs <deck.config.json> [--report]
+ *   node tools/validate-manifest.mjs <deck.config.json>            DEFAULT: validation gate
+ *   node tools/validate-manifest.mjs <deck.config.json> --report   advisory report
+ *
+ * DEFAULT mode mirrors what the renderer does: every declaration error counts
+ * towards the exit code, E_AMBIGUOUS_UNDECLARED included. A checker that exits 0
+ * while the pipeline refuses the same manifest is a contradiction the quality
+ * constraint does not allow.
+ *
+ * --report keeps the advisory behaviour — it answers "which fields would a
+ * manifest for this deck have to declare?" — so an unresolved ambiguity is
+ * information there rather than a verdict, and is excluded from the exit code.
+ *
+ * NOT decidable here: A_MEMBERS is a RUNTIME ambiguity, so it takes a DOM to see
+ * whether members nest. Even in default mode a 0 means "legally well-formed",
+ * not "the renderer will accept it". The renderer stays authoritative for
+ * runtime coverage; U4 covers that path.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import {
-  loadAndPlan, staticAmbiguity, AMB, ERR, SCHEMA_VERSION, EMBED_ID, SIDECAR_NAME,
+  loadAndPlan, staticAmbiguity, runtimeUnresolved, AMB, ERR, SCHEMA_VERSION, EMBED_ID, SIDECAR_NAME,
 } from "../lib/manifest.mjs";
 
 const cfgPath = resolve(process.argv[2] ?? "deck.config.json");
@@ -71,17 +86,26 @@ if (!res.present) {
   console.log("  manifest        : ABSENT -> full fallback to reverse-engineering (G3 path)");
 } else {
   console.log(`  merged fields   : ${[...(res.provenance?.keys() ?? [])].join(", ") || "(none)"}`);
-  const hard = res.errors.filter((e) => e.code !== ERR.AMBIGUOUS_UNDECLARED);
-  if (hard.length) {
-    console.log(`  DECLARATION ERRORS (${hard.length}):`);
-    for (const e of hard) console.log(`    ${e.code}  ${e.field}  ${e.detail}`);
+  // Default mode lists every error, because every error is fatal to the run.
+  // --report lists ambiguity separately: advice there, not a verdict.
+  const shown = report ? res.errors.filter((e) => e.code !== ERR.AMBIGUOUS_UNDECLARED) : res.errors;
+  const ambErrs = report ? res.errors.filter((e) => e.code === ERR.AMBIGUOUS_UNDECLARED) : [];
+  if (shown.length) {
+    console.log(`  DECLARATION ERRORS (${shown.length}):`);
+    for (const e of shown) console.log(`    ${e.code}  ${e.field}  ${e.detail}`);
   } else {
     console.log("  declaration     : legal (version/capturePad present, no conflicts, entries well-formed)");
+  }
+  if (ambErrs.length) {
+    console.log(`  ADVISORY (--report only, not counted in the exit code): ${ambErrs.length}`);
+    for (const e of ambErrs) console.log(`    ${e.code}  ${e.field}  ${e.detail}`);
   }
   console.log(`  g6 attestation  : ${g6Attested ? "present" : "absent"} (merge-intent field ${g6Attested ? "allowed" : "would FAIL with E_INTENT_WITHOUT_G6"})`);
 }
 
 /* ── 2. ambiguity report: which fields a manifest MUST declare ───────────── */
+
+const runtimeUnresEarly = res.present ? runtimeUnresolved(res.merged, sections.length) : [];
 
 if (report) {
   const amb = staticAmbiguity(facts);
@@ -96,7 +120,29 @@ if (report) {
   console.log(`    A_MEMBERS  nested layer members (one .aN member containing another member of the same class)`);
   console.log(`    A_INDEX    slide order not a unique ordered child list of the page container`);
   const need = [...amb.keys()];
-  console.log(`\n  => REQUIRED declarations for this deck: version, capturePad${need.length ? ", plus coverage for " + need.join(", ") : ""}`);
+  // Static and runtime are stated SEPARATELY, never merged into one
+  // "REQUIRED" line. The merged line used to tell the reader that
+  // version+capturePad were enough for a deck whose page 7 genuinely nests its
+  // members — the sentence this whole class of divergence started from.
+  console.log(`\n  => static : version, capturePad${need.length ? ", plus coverage for " + need.join(", ") : ""}`);
+  console.log(`  => runtime: ${runtimeUnresEarly.length ? `UNRESOLVED (${runtimeUnresEarly.map((u) => u.code).join(", ")}, ${sections.length} page(s))` : "resolved"}`);
 }
 
-process.exit(res.present && res.errors.some((e) => e.code !== ERR.AMBIGUOUS_UNDECLARED) ? 1 : 0);
+/* ── 3. runtime dimensions: undecidable on paper ─────────────────────────── */
+
+const runtimeUnres = runtimeUnresEarly;
+if (runtimeUnres.length) {
+  console.log(`\n  RUNTIME UNRESOLVED (no DOM here): ${runtimeUnres.length}`);
+  for (const u of runtimeUnres) console.log(`    ${u.code}  ${u.detail}`);
+  console.log("    this checker alone cannot certify the manifest while these remain; the renderer is authoritative");
+}
+
+// DEFAULT: every declaration error is fatal, E_AMBIGUOUS_UNDECLARED included,
+// and a runtime dimension that cannot be settled on paper fails conservatively.
+// Exiting 0 here must never imply "the renderer will accept it".
+// --report: advisory only, nothing counts towards the exit code.
+const fatal = report
+  ? res.errors.filter((e) => e.code !== ERR.AMBIGUOUS_UNDECLARED)
+  : res.errors;
+const runtimeFatal = report ? [] : runtimeUnres;
+process.exit(res.present && (fatal.length || runtimeFatal.length) ? 1 : 0);

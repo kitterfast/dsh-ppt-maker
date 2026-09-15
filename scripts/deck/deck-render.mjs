@@ -30,6 +30,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { evaluate, launchHeadless, screenshot } from "./lib/browser.mjs";
+import { loadAndPlan, patchMerge, runtimeAmbiguity, declaredPage, ERR } from "./lib/manifest.mjs";
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
@@ -43,8 +44,6 @@ const projectRoot = dirname(configPath);
 const require = createRequire(join(projectRoot, "package.json"));
 const htmlPath = resolve(projectRoot, config.html);
 const outDir = resolve(projectRoot, config.out ?? "render");
-const W = config.width ?? 1280;
-const H = config.height ?? 720;
 
 /** Bump when the capture logic changes, so stale caches are never reused. */
 const RENDERER_VERSION = "28";
@@ -60,12 +59,50 @@ for (const r of animSpec?.entranceRules ?? []) {
   if (m && !r.infinite && typeof r.delayMs === "number") classDelayMs.set(m[1], r.delayMs);
 }
 
+/* ══ 2.6.0 声明层入口（输入层）══════════════════════════════════════════════
+ * 无声明：只多两次文件读取与正则，mode="reverse"，行为与 2.5.0 一致。
+ * 有声明：逐字段合并 + 严格校验 + 静态歧义判定；任何错误在【开浏览器之前】FAIL。
+ * 运行期歧义（A_INDEX / A_MEMBERS）在同一次 DOM pass 内、任何抓取之前判定。 */
+const htmlText = readFileSync(htmlPath, "utf8");
+const declFacts = (() => {
+  const sections = htmlText.split(/<section\b[^>]*class="[^"]*\bslide\b/).slice(1);
+  const classesOnPages = sections.map((raw, i) => {
+    const body = raw.split("</section>")[0];
+    const set = new Set();
+    for (const c of body.matchAll(/class="([^"]*)"/g)) for (const tok of c[1].split(/\s+/)) if (/^a\d+$/.test(tok)) set.add(tok);
+    return { page: i + 1, classes: [...set] };
+  });
+  let multiple = 0;
+  for (const raw of sections) {
+    const body = raw.split("</section>")[0];
+    for (const c of body.matchAll(/class="([^"]*)"/g)) if (c[1].split(/\s+/).filter((t) => /^a\d+$/.test(t)).length > 1) multiple++;
+  }
+  return { config, classesOnPages, declaredClassDelays: classDelayMs, elementsWithoutClass: 0, elementsWithMultipleClasses: multiple };
+})();
+const mf = loadAndPlan({ htmlPath, htmlText, config, facts: declFacts, g6Attested: false });
+const declMode = mf.present ? "declared" : "reverse";
+const declFingerprint = mf.present ? createHash("sha256").update(JSON.stringify(mf.merged)).digest("hex").slice(0, 16) : "none";
+if (mf.errors.length) {
+  console.error(`[manifest] FAILED 声明层校验未通过（开浏览器前拒收）—— ${mf.errors.length} 项:`);
+  for (const e of mf.errors) console.error(`  ${e.code}  ${e.field}  ${e.detail}`);
+  process.exit(1);
+}
+console.log(mf.present
+  ? `[manifest] 声明路径已启用：合并字段 ${mf.provenance.size} 个（来源 embedded=${mf.sources.embedded} sidecar=${mf.sources.sidecar}）`
+  : "[contract] 本稿走宽松路径，未做声明级验证");
+
+const W = mf.merged?.stage?.width ?? config.width ?? 1280;
+const H = mf.merged?.stage?.height ?? config.height ?? 720;
+
 /** Hash decides whether a slide can be reused. Config participates, so changing
  *  a delay or a chrome selector invalidates the cache too. */
 const deckHash = createHash("sha256")
   .update(RENDERER_VERSION)
   .update(readFileSync(htmlPath))
   .update(JSON.stringify(config))
+  // G7：声明路径与反解路径的中间缓存不得共享
+  .update(declMode)
+  .update(declFingerprint)
   .digest("hex")
   .slice(0, 16);
 
@@ -231,7 +268,7 @@ function clipFor(box, pad, W, H) {
 
 // ---------------------------------------------------------------------- render
 
-const pad = config.capturePad ?? 2;
+const pad = mf.merged?.capturePad ?? config.capturePad ?? 2;
 const settleMs = config.settleMs ?? 180;
 const baseQuality = config.baseQuality ?? 88;
 
@@ -280,6 +317,96 @@ try {
   const total = await evaluate(client, `window.__deckRender.slides().length`);
   if (!total) throw new Error(`no slides matched ${config.slide ?? ".slide"}`);
   console.log(`[render] ${total} slides, deck hash ${deckHash}`);
+
+  /* ── 2.6.0 运行期歧义 + 声明一致性：一次 DOM pass，任何抓取之前 ───────── */
+  let declPlan = null;
+  if (mf.present) {
+    const pages = [];
+    for (let p = 1; p <= total; p++) if (!only || only.has(p - 1)) pages.push(p);
+    // Declared member selectors per page, resolved INSIDE the page below so that
+    // member identity — not merely a count — can be compared with the runtime
+    // layering. Addressing follows the same 1-based page rule as patchMerge.
+    const declSelectors = new Map();
+    (mf.merged?.slides ?? []).forEach((s2, i) => {
+      const r = declaredPage(s2);
+      const pg = r.page ?? (r.via === null ? i + 1 : null);
+      if (!pg) return;
+      const sets = (s2.layers ?? []).filter((L) => Array.isArray(L.members) && L.members.length).map((L) => L.members);
+      if (sets.length) declSelectors.set(pg, sets);
+    });
+
+    const domSlides = [], domMotion = [], nestedPages = [], indexOk = [];
+    for (const p of pages) {
+      const declSets = declSelectors.get(p) ?? [];
+      const raw = JSON.parse(await evaluate(client, `(function(){
+        var s = window.__deckRender.slides()[${p - 1}];
+        var gs = window.__deckRender.deckGroups(s);
+        function sig(el){
+          var t = el.tagName.toLowerCase();
+          var id = el.id ? ('#' + el.id) : '';
+          // no backslash escapes here: this source lives inside a template
+          // literal, which would turn \s into a bare s and split on the letter s
+          var cl = (el.getAttribute('class') || '').split(' ').filter(Boolean).sort();
+          return t + id + (cl.length ? ('.' + cl.join('.')) : '');
+        }
+        function boxOf(els){
+          if (!els.length) return null;
+          var x = 1e9, y = 1e9, r = -1e9, b = -1e9;
+          for (var i = 0; i < els.length; i++){ var q = els[i].getBoundingClientRect();
+            if (q.left < x) x = q.left; if (q.top < y) y = q.top;
+            if (q.right > r) r = q.right; if (q.bottom > b) b = q.bottom; }
+          return { x: x, y: y, w: r - x, h: b - y };
+        }
+        var nested = 0;
+        for (var i=0;i<gs.length;i++){ var els = window.__deckRender.elsOf(gs[i]);
+          for (var a=0;a<els.length;a++) for (var b=0;b<els.length;b++) if (a!==b && els[a].contains(els[b])) nested++; }
+        var declSets = ${JSON.stringify(declSets)};
+        var resolved = declSets.map(function(sels){ return sels.map(function(sel){
+          var bad = false, hits = [];
+          try { hits = Array.prototype.slice.call(s.querySelectorAll(sel)); } catch (e) { bad = true; }
+          return { sel: sel, invalid: bad, count: hits.length, memberSigs: hits.map(sig).sort() }; }); });
+        return JSON.stringify({ nested: nested,
+          layers: gs.map(function(g){ var d = window.__deckRender.groupDescribe(g); var m = window.__deckRender.elsOf(g);
+            return { cls: d.cls, memberCount: m.length, memberSigs: m.map(sig).sort(), box: boxOf(m) }; }),
+          resolved: resolved });
+      })()`));
+      if (raw.nested > 0) nestedPages.push(p);
+      domSlides.push({ page: p, layers: raw.layers, resolved: raw.resolved });
+    }
+    if (process.env.DECK_DUMP_DOM) {
+      writeFileSync(process.env.DECK_DUMP_DOM, JSON.stringify({ total, pages, slides: domSlides, motion: domMotion, nestedPages }, null, 1), "utf8");
+      console.log(`[manifest] DOM pass 已导出: ${process.env.DECK_DUMP_DOM}`);
+    }
+    const amb = runtimeAmbiguity({ slideIndexOrderUnique: true, nestedLayerGroups: nestedPages });
+    for (const m of (mf.merged.motion ?? [])) {
+      const r = JSON.parse(await evaluate(client, `(function(){
+        var s = window.__deckRender.slides()[${m.slide - 1}];
+        var el = s ? s.querySelector(${JSON.stringify(m.owner)}) : null;
+        if (!el) return JSON.stringify({ found: false });
+        var own = (el.tagName === 'CANVAS') ? window.__deckRender.canvasOwner(el) : el;
+        var isCv = own.tagName === 'CANVAS' || !!own.querySelector('canvas');
+        return JSON.stringify({ found: true, kind: isCv ? 'canvas' : 'css' });
+      })()`));
+      if (r.found) domMotion.push({ page: m.slide, owner: m.owner, kind: r.kind });
+    }
+    const res = patchMerge({ merged: mf.merged, amb, dom: { slides: domSlides, motion: domMotion, total, nestedPages } });
+    if (res.errors.length) {
+      console.error(`[manifest] FAILED 声明与 DOM 不一致（未做任何抓取）—— ${res.errors.length} 项:`);
+      for (const e of res.errors) console.error(`  ${e.code}  ${e.field}  ${e.detail}`);
+      process.exit(1);
+    }
+    for (const n2 of res.notes) console.log(`[manifest] ${n2}`);
+    if (mf.merged.motion) {
+      for (const f of domMotion) {
+        if (!mf.merged.motion.some((m) => m.slide === f.page && m.owner === f.owner)) {
+          console.error(`[manifest] FAILED ${ERR.MOTION_ABSENT_BUT_MOVING} slide ${f.page} ${f.owner}：motion 已声明但该元素在动`);
+          process.exit(1);
+        }
+      }
+    }
+    declPlan = res.plan;
+    console.log(`[manifest] DOM pass 完成：检查 ${pages.length} 页，run-time 歧义 ${[...amb.keys()].join(",") || "无"}`);
+  }
 
   for (let n = 0; n < total; n++) {
     if (only && !only.has(n)) { if (oldByIndex.get(n)) shots.push(oldByIndex.get(n)); continue; }
@@ -339,16 +466,54 @@ try {
     const stableAfter = await waitStable(client);
     if (stableAfter < 0) console.log(`[render] p${n + 1}: WARNING page never stopped changing; captures may disagree`);
 
+    // D7 + F4: the reverse grouping is ALWAYS computed. A declared layer then
+    // overrides the box of the layer patchMerge located it to, and every layer
+    // that was not declared keeps the reverse result. A page with no located
+    // declaration carries no plan entry at all, so it never enters this branch —
+    // previously it did, with empty member lists, producing a null box and a
+    // crash inside the frozen capture block.
+    const declLayers = declPlan?.slides?.get(n + 1) ?? null;
+    const declSpec = declLayers ? declLayers.map((L) => ({ k: L.k, sels: L.members })) : [];
     const shape = await evaluate(
       client,
       `(function(){
          var s = window.__deckRender.slides()[${n}];
          var gs = window.__deckRender.deckGroups(s);
-         return JSON.stringify(gs.map(function(g){ var d = window.__deckRender.groupDescribe(g); var b = window.__deckRender.unionRect(g);
-           return { box: b, text: d.text, cls: d.cls }; }));
+         var groups = gs.map(function(g){ var d = window.__deckRender.groupDescribe(g); var b = window.__deckRender.unionRect(g);
+           return { box: b, text: d.text, cls: d.cls }; });
+         var spec = ${JSON.stringify(declSpec)};
+         var decl = spec.map(function(e){
+           var els = [];
+           for (var i = 0; i < e.sels.length; i++) {
+             var hits = s.querySelectorAll(e.sels[i]);
+             for (var j = 0; j < hits.length; j++) if (els.indexOf(hits[j]) === -1) els.push(hits[j]);
+           }
+           var g = { cls: null, els: els };
+           return { k: e.k, box: window.__deckRender.unionRect(g), n: els.length };
+         });
+         return JSON.stringify({ groups: groups, decl: decl });
        })()`,
     );
-    const groups = JSON.parse(shape);
+    const parsed = JSON.parse(shape);
+    const groups = parsed.groups;
+    if (declLayers) {
+      for (const dd of parsed.decl) {
+        const g = groups[dd.k];
+        if (!g) {
+          console.error(`[manifest] FAILED ${ERR.DOM_MISMATCH} slide ${n + 1}: 声明的层 k=${dd.k} 超出反解层数 ${groups.length}`);
+          process.exit(1);
+        }
+        if (!dd.box || dd.n === 0) {
+          console.error(`[manifest] FAILED ${ERR.LAYER_BOX_UNRESOLVED} slide ${n + 1} layer ${dd.k}: 声明的 members 在页内解析不到元素`);
+          process.exit(1);
+        }
+        g.box = dd.box;
+      }
+      for (const L of declLayers) {
+        const g = groups[L.k];
+        if (g) g.declaredDelayMs = L.delayMs;
+      }
+    }
     // The proven deck pads EVERY layer box by a constant 10px per side; this is
     // measured, not guessed. Page 3 .a1 ships at 86,66,1108x46 while its layout
     // rect is 96,76,1088x26 -- and the same +10 holds on every page, including
@@ -369,6 +534,14 @@ try {
       g.delayMs = (cls && classDelayMs.has(cls))
         ? classDelayMs.get(cls)
         : (delays[k] ?? (delays[delays.length - 1] + (k - delays.length + 1) * fallbackStep));
+      // 声明路径：延迟用声明值，且声明必须与反解值一致，否则 FAIL（不静默、不折中）
+      if (g.declaredDelayMs !== undefined && g.declaredDelayMs !== null) {
+        if (g.declaredDelayMs !== g.delayMs) {
+          console.error(`[manifest] FAILED ${ERR.DOM_MISMATCH} slide ${n + 1} layer ${k}: 声明 delayMs=${g.declaredDelayMs}，反解=${g.delayMs}`);
+          process.exit(1);
+        }
+        g.delayMs = g.declaredDelayMs;
+      }
       g.durationMs = config.groups?.duration ?? 500;
       g.moveY = config.groups?.moveY ?? 14;
       g.easing = config.groups?.easing ?? [0.22, 0.61, 0.36, 1];
@@ -404,7 +577,10 @@ try {
       .digest("hex")
       .slice(0, 16);
     const prev = oldByIndex.get(n);
-    if (!force && prev && prev.hash === hash && prev.groups.every((g) => existsSync(join(outDir, g.file))) && existsSync(join(outDir, prev.base)) && existsSync(join(outDir, prev.ref))) {
+    // A dropped group (empty static part) ships no layer file, so `file` is null
+    // in the manifest; it must not be probed on disk. Probing it crashed every
+    // full non-force re-render of a deck that has such a layer.
+    if (!force && prev && prev.hash === hash && (prev.groups || []).every((g) => !g.file || existsSync(join(outDir, g.file))) && existsSync(join(outDir, prev.base)) && existsSync(join(outDir, prev.ref))) {
       console.log(`[render] p${n + 1} cached`);
       shots.push(prev);
       continue;
@@ -539,6 +715,14 @@ try {
       const gifLead = config.gif?.leadMs ?? 1500;
       const maxPeriod = config.gif?.maxPeriodMs ?? 6000;
       const hasCanvasBits = groups.some((g) => (g.bits || []).some((b) => /canvas/i.test(b.tag || "")));
+      // 声明路径：动效按 loopMs 定帧与时长，不再"先录再猜"
+      const declLoopMs = (() => {
+        if (!declPlan || !mf.merged?.motion) return null;
+        const owners = new Set();
+        for (const g of groups) for (const b of (g.bits || [])) owners.add(b.owner || "");
+        for (const m of mf.merged.motion) if (m.slide === n + 1) return m.loopMs;
+        return null;
+      })();
       // Enter WITH the entrance so keyframe loops and the deck's own JS start.
       // Step to a DIFFERENT page first: `go(n)` on the page that is already
       // current is a no-op (the deck compares the index), so the entrance class

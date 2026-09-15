@@ -1,3 +1,40 @@
+## 2.6.0 (2026-09-15)
+
+### 新增
+- 声明路径激活：manifest 声明层接入 deck-render.mjs
+- F4：按 members 选择器定位层，与反解层合并
+- F1：声明侧 page 为正名，index 为 1-based 同义别名
+- F2：删除 motion 覆盖 A_MEMBERS 的豁免
+- F3：members 由“比数量”改“比身份”，真子集 FAIL
+- F5：层框不可解析即 E_LAYER_BOX_UNRESOLVED
+- D7：无声明页走反解分支，不再崩溃
+- 校验器与渲染器共用 coversStatic，分叉闭合
+- validate-manifest 默认硬失败，--report 保持顾问行为
+
+### 修复
+- G2 用例集更新（C 回归本义，F 独立承担歧义拒绝）
+- G2 新增 case G：校验器与渲染器判定一致
+
+### 验证
+- G5 八区域零差异（F4 后、F4d 后各一次）
+- G2 七例 7/7 PASS
+- U4-a/b/c'/d 4/4 PASS
+- T2 通过（声明 vs 反解，非自比）
+- G3 全稿容差判据通过（11 页全在容差内）
+- element 冒烟通过（AI 通史 p1）
+- example.json 实跑 exit 0
+
+### F 项（新登记）
+- 渲染像素级非确定性：所有 PNG 含非 canvas 页。
+  同码双跑 maxDelta 4–10，比例 0.0005%–0.3380%。
+  集成前既存，非本次引入。判据改为容差制。
+
+### 证据强度降级披露
+- U1/U2/U3 此前“逐字节一致”为单样本对比。
+  因渲染像素级非确定性，证据强度降级为
+  “单样本一致，不足以排除抖动”。
+  本次起判据改为容差制（verify.maxMeanDiff=6、maxBadPixelRatio=0.02）。
+
 # Changelog
 
 版本号写在 `package.json` 与 `lib/client.js` 的 `PLUGIN_VERSION` 两处，校验器会断言两者一致。
