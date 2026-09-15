@@ -1,0 +1,43 @@
+{
+  "$schemaNote": "class (.aN) 模式校准示例。与 deck.config.example.json 的差别集中在 groups.selector、capturePad、groups.delays。",
+  "$whenToUse": "HTML 的图层用固定类名 .a1 .a2 … .aN 标记时用本示例；用 groups.selector 通配（如 .body > *）的 element 模式请用 deck.config.example.json。",
+
+  "html": "../deck/deck.html",
+  "out": "../deck/render",
+  "pptx": "../deck/deck.pptx",
+  "title": "class 模式示例",
+  "width": 1280,
+  "height": 720,
+  "slide": ".slide",
+  "page": ".page",
+
+  "$comment_goto": "翻页函数。若页面绑定了全局 go() 就照抄；若只有 DOM 按钮（#prevBtn/#nextBtn/#dots），需写成点击驱动的函数，并用键盘事件兜底。",
+  "goto": "window.__slideInfo.go",
+
+  "$comment_chrome": "播放时应隐藏的浏览器外壳元素。",
+  "chrome": [".hud"],
+
+  "$comment_groups": "class 模式：一个 .aN 类一层。delays 是【绝对时间】，照抄 CSS 的 animation-delay，不写则无法从 HTML 唯一推导。",
+  "groups": {
+    "selector": ".a1, .a2, .a3, .a4, .a5, .a6",
+    "delays": [40, 150, 260, 370, 480, 590],
+    "duration": 500,
+    "moveY": 20
+  },
+
+  "transitionMs": 450,
+  "settleMs": 400,
+
+  "capturePad": 10,
+  "$capturePadNote": "10px per side，【实测常量，无法从 HTML 推导，必须声明】。测量对象：为什么选我做学委_动态版.pptx，其每一页的图层框都等于「该层所有成员的 getBoundingClientRect 并集」各边外扩 10px。element 模式（deck.config.example.json）实测为 2px —— 两者不可互用，用错会让每层几何各边偏差 8px。",
+
+  "baseFormat": "png",
+  "$baseFormatNote": "必须 png。校验器会把播放器导出的图与浏览器渲染逐像素比对，jpeg 在文字边缘的振铃会表现为数个百分点差异，与布局无关。",
+  "captureScale": 2,
+
+  "verify": {
+    "maxMeanDiff": 6,
+    "maxBadPixelRatio": 0.02
+  },
+  "$verifyNote": "容差判据（也是 deck-verify.mjs 的代码默认值）：逐像素 d = max(|dR|,|dG|,|dB|)，meanDiff = Σd/n ≤ 6，badPixel%（d>32）≤ 2%。不要用字节/像素相等判定 —— 渲染天生非确定（抗锯齿、字体 hinting、亚像素舍入），同码双跑也会产生差异。"
+}

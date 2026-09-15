@@ -123,3 +123,22 @@ node scripts\deck\tools\framediff.mjs frames
 - GIF 只有 256 色。本片是平色设计影响很小；要无损就换 MP4（同样当媒体插入）。
 - 入场曲线/位移由**预置 + 相对关键帧**决定，与 HTML 的 `cubic-bezier` 是近似而非逐帧相同。
 - 转场与入场在 PPT 里是"先后"关系；淡入的透明度曲线在 PowerPoint 里是线性的。
+
+## 图层的 capturePad：唯一无法推导、必须声明的常量
+
+`capturePad` 决定每个图层框相对「成员元素并集」各边外扩多少像素。它**不能从 HTML 推导**，也无法用默认值补对 —— 代码默认 `2`，而实测存在两种校准：
+
+| 模式 | `groups.selector` | 实测 `capturePad` | 示例文件 |
+|---|---|---|---|
+| element | 通配，如 `.body > *` | **2** | `deck.config.example.json` |
+| class（`.aN`） | `.a1, .a2, …` | **10** | `deck.config.example-class.json` |
+
+**两者不可互用**：若 class 模式的稿照抄 element 示例的 `capturePad: 2`，每层几何会各边少 8px，产物与基准不一致。
+
+`capturePad: 10` 的实测依据：`为什么选我做学委_动态版.pptx` 每一页的图层框都等于「该层所有成员的 `getBoundingClientRect()` 并集」各边外扩 10px。
+
+## 判据是容差制，不是字节相等
+
+`verify.maxMeanDiff`（默认 6）与 `verify.maxBadPixelRatio`（默认 0.02，bad 定义为单像素 `max(|dR|,|dG|,|dB|) > 32`），算法同 `deck-verify.mjs`。
+
+**不要用字节或像素相等来判定一致性**：浏览器渲染天生非确定（抗锯齿、字体 hinting、亚像素舍入），同一份代码连续两次渲染即会产生真实像素差异（实测非 canvas 页 maxDelta 4–10、波动比例 0.0005%–0.3380%）。任何"逐字节一致"的期望都是不可达的。
