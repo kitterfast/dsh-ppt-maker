@@ -52,15 +52,14 @@ const tf = (props, fn) => {
 const specMoveY = kf ? Math.abs(tf(kf.from, "translateY") ?? config.groups?.moveY ?? 14) : null;
 const specRotDeg = kf ? tf(kf.from, "rotate") : null;
 const specDuration = spec?.entranceRules?.find((r) => r.durationMs)?.durationMs ?? null;
-const specLayerDelays = (() => {
-  if (!spec?.entranceRules?.length) return null;
-  const out = [];
-  for (const r of spec.entranceRules) {
-    const m = /\.a(\d+)\s*$/.exec(r.selector.replace(/\s+/g, " ").trim());
-    if (m && !r.infinite) out[Number(m[1]) - 1] = r.delayMs;
-  }
-  return out.filter((x) => x !== undefined).length ? out : null;
-})();
+// Delay keyed by the group's REAL class (a1..a6), never by group index: a deck
+// with two .a4 groups (nested canvas wrapper) had the second one read the .a5
+// slot and every following entrance shifted by one stagger step.
+const specDelayByClass = new Map();
+for (const r of spec?.entranceRules ?? []) {
+  const m = /\.(a\d+)\s*$/.exec(r.selector.replace(/\s+/g, " ").trim());
+  if (m && !r.infinite && typeof r.delayMs === "number") specDelayByClass.set(m[1], r.delayMs);
+}
 
 // 12192000 EMU / 1280 px == 6858000 EMU / 720 px == 9525 EMU per px  ->  px/96 inch.
 const SLIDE_W_EMU = 12192000;
@@ -107,18 +106,22 @@ for (const slide of manifest.slides) {
     // A group with permanent motion ships as a looping GIF instead of a still:
     // PowerPoint plays an animated GIF automatically, with no timeline XML, so
     // the endless loop survives. The entrance effect is attached just the same.
+    // A dropped group's chrome moved into its nested-canvas GIF (proven-deck
+    // structure): no PNG picture, but its bit GIFs below still ship.
     const useGif = g.gif && existsSync(join(outDir, g.gif));
-    const file = join(outDir, useGif ? g.gif : g.file);
-    if (!existsSync(file)) throw new Error(`missing layer ${file}`);
-    s.addImage({
-      path: file,
-      x: inch(g.x),
-      y: inch(g.y),
-      w: inch(g.w),
-      h: inch(g.h),
-      objectName: `g${g.k}`,
-      altText: g.text || `slide ${slide.page} layer ${g.k}`,
-    });
+    if (!g.dropped) {
+      const file = join(outDir, useGif ? g.gif : g.file);
+      if (!file || !existsSync(file)) throw new Error(`missing layer ${file}`);
+      s.addImage({
+        path: file,
+        x: inch(g.x),
+        y: inch(g.y),
+        w: inch(g.w),
+        h: inch(g.h),
+        objectName: `g${g.k}`,
+        altText: g.text || `slide ${slide.page} layer ${g.k}`,
+      });
+    }
     // Animated sub-elements (dashed flow, waveform) ride on top of their parent
     // layer as their own looping GIF, so the surrounding text stays lossless.
     (g.bits || []).forEach((b, j) => {
@@ -332,6 +335,7 @@ for (let i = 0; i < slideNames.length; i++) {
     if (m) byName.set(m[2], Number(m[1]));
   }
   for (const g of slide.groups) {
+    if (g.dropped) continue;
     if (!byName.has(`g${g.k}`)) throw new Error(`${name}: no picture named g${g.k} (found: ${[...byName.keys()].join(", ")})`);
   }
   if (!byName.has("base")) throw new Error(`${name}: no picture named base`);
@@ -342,12 +346,16 @@ for (let i = 0; i < slideNames.length; i++) {
   const durationMs = specDuration ?? config.groups?.duration ?? 500;
   const effects = [];
   for (const g of slide.groups) {
-    effects.push({ spid: byName.get(`g${g.k}`), delayMs: specLayerDelays?.[g.k] ?? g.delayMs, moveFrac, easing, durationMs, rotFrom });
+    const gcls = (g.cls || "").match(/\ba\d+\b/)?.[0] ?? null;
+    const delayMs = (gcls && specDelayByClass.get(gcls)) ?? g.delayMs;
+    if (!g.dropped) {
+      effects.push({ spid: byName.get(`g${g.k}`), delayMs, moveFrac, easing, durationMs, rotFrom });
+    }
     (g.bits || []).forEach((b, j) => {
       if (!b.gif) return;
       const spid = byName.get(`g${g.k}b${j}`);
       if (spid === undefined) throw new Error(`${name}: no picture named g${g.k}b${j}`);
-      effects.push({ spid, delayMs: specLayerDelays?.[g.k] ?? g.delayMs, moveFrac, easing, durationMs, rotFrom });
+      effects.push({ spid, delayMs, moveFrac, easing, durationMs, rotFrom });
     });
   }
   effects.sort((a, b) => a.delayMs - b.delayMs);

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * deck-render.mjs 闁?one headless pass over an HTML deck.
  *
  * Fixes three of the four defects measured in the 2026-09-14 run:
@@ -47,7 +47,18 @@ const W = config.width ?? 1280;
 const H = config.height ?? 720;
 
 /** Bump when the capture logic changes, so stale caches are never reused. */
-const RENDERER_VERSION = "22";
+const RENDERER_VERSION = "25";
+
+// Per-class entrance delays from the animation spec (HTML truth). Groups carry
+// their real class, so repeated classes (two .a4 wrappers) still map correctly —
+// indexing by group number was off by one whenever a class repeated.
+const animSpecPath = resolve(projectRoot, config.animSpec ?? "anim-spec.json");
+const animSpec = existsSync(animSpecPath) ? JSON.parse(readFileSync(animSpecPath, "utf8")) : null;
+const classDelayMs = new Map();
+for (const r of animSpec?.entranceRules ?? []) {
+  const m = /\.(a\d+)\s*$/.exec((r.selector ?? "").trim());
+  if (m && !r.infinite && typeof r.delayMs === "number") classDelayMs.set(m[1], r.delayMs);
+}
 
 /** Hash decides whether a slide can be reused. Config participates, so changing
  *  a delay or a chrome selector invalidates the cache too. */
@@ -227,6 +238,13 @@ try {
     await new Promise((r) => setTimeout(r, 150));
   }
   await setup(client, config);
+  // Headless Chromium can starve requestAnimationFrame when nothing else
+  // schedules frames, freezing script-driven WebGL canvases mid-capture
+  // (measured: p7 constellation rendered once, then never again — while the
+  // page's rAF counter kept climbing). A persistent no-op rAF chain keeps the
+  // frame scheduler alive for the whole session; the deck's own render loop
+  // then keeps drawing. Verified with probe4: motion only with this ticker.
+  await evaluate(client, `window.__tickerOn = true; (function __t(){ if (window.__tickerOn) requestAnimationFrame(__t); })(); true`);
   await evaluate(client, `window.__deckRender.ready()`);
   await evaluate(client, `window.__deckRender.freezeScale(); true`);
 
@@ -297,7 +315,13 @@ try {
     groups.forEach((g, k) => {
       g.permanent = permanentFlags[k]?.permanent === true;
       g.canvas = permanentFlags[k]?.canvas === true;
-      g.delayMs = delays[k] ?? (delays[delays.length - 1] + (k - delays.length + 1) * fallbackStep);
+      // Delay from the element's ACTUAL class (spec), so repeated classes and
+      // non-sequential group order map to the HTML's own staggering — indexing
+      // by k is off whenever a class repeats (p7 has two .a4 groups).
+      const cls = (g.cls || "").match(/\ba\d+\b/)?.[0] ?? null;
+      g.delayMs = (cls && classDelayMs.has(cls))
+        ? classDelayMs.get(cls)
+        : (delays[k] ?? (delays[delays.length - 1] + (k - delays.length + 1) * fallbackStep));
       g.durationMs = config.groups?.duration ?? 500;
       g.moveY = config.groups?.moveY ?? 14;
       g.easing = config.groups?.easing ?? [0.22, 0.61, 0.36, 1];
@@ -312,9 +336,12 @@ try {
            // The loop animations only exist while .anim is applied (the same
            // trap as the permanent-motion probe): without it every getAnimations()
            // call returns nothing and no animated sub-element is ever found.
+           // Per-group scan, NOT the merged slide scan: a canvas inside NESTED
+           // .aN groups (like .a4 wrapping #threeAI.a4) landed in every ancestor
+           // group's list before, producing duplicate "phantom" bits per group.
            s.classList.add('anim');
            var res = JSON.stringify(gs.map(function(g){
-             return window.__deckRender.animatedBitsOf(s).filter(function(b){ return g.contains(b); })
+             return window.__deckRender.animatedBits(g)
                .map(function(b){ var d = window.__deckRender.describe(b); var x = window.__deckRender.inkBox(b);
                  return { box: x, text: d.text, tag: d.cls }; }); }));
            s.classList.remove('anim'); void s.offsetWidth; return res; })()`,
@@ -349,7 +376,7 @@ try {
     //     so all the layers below were captured empty.
     await evaluate(
       client,
-      `window.__restoreBase = window.__deckRender.hideAll(window.__deckRender.groups(window.__deckRender.slides()[${n}])); true`,
+      `window.__restoreBase = window.__deckRender.hideAll(window.__deckRender.groups(window.__deckRender.slides()[${n}])); (function(){ var s = window.__deckRender.slides()[${n}]; var bits = window.__deckRender.animatedBitsOf(s); for (var i = 0; i < bits.length; i++){ if (bits[i].tagName === 'CANVAS' && window.__deckRender.nestedCanvas(bits[i])){ var own = window.__deckRender.canvasOwner(bits[i]); if (own && own.closest('.slide') === s) own.style.visibility = 'visible'; } } return true; })()`,
     );
     const baseFile = config.baseFormat === "jpeg" ? "base.jpg" : "base.png";
     writeFileSync(
@@ -366,13 +393,16 @@ try {
 
     // The animated sub-elements must NOT be baked into the PNG layer: they are
     // drawn by their own GIF on top, and a static copy underneath would ghost.
+    // For a canvas nested in .aN layers, the whole owning layer is hidden so its
+    // chrome (title text, background) moves into the GIF exactly like the
+    // proven deck — the layer then comes out empty and is dropped below.
     await evaluate(
       client,
-      `window.__hideBits = window.__deckRender.hideAll(window.__deckRender.animatedBitsOf(window.__deckRender.slides()[${n}])); true`,
+      `window.__hideBits = window.__deckRender.hideAll(window.__deckRender.hiddenBits(window.__deckRender.slides()[${n}])); true`,
     );
 
     // --- one true-alpha PNG per animation group
-    const layerPaths = [];
+    const layerPaths = {};
     for (let k = 0; k < groups.length; k++) {
       await evaluate(
         client,
@@ -380,6 +410,18 @@ try {
            var s = window.__deckRender.slides()[${n}];
            var g = window.__deckRender.groups(s)[${k}];
            window.__restore = window.__deckRender.isolate(g);
+           // When the slide has a nested canvas owner (e.g. #threeAI.a4 inside
+           // .a4), an ancestor group's own capture must not keep the ink of its
+           // descendant groups -- the GIF and the child layers carry it, and a
+           // copy here would double both the pixels and the entrance timing.
+           var owners = window.__deckRender.nestedOwners(s);
+           if (owners.length) {
+             var gs = window.__deckRender.groups(s), extra = [];
+             for (var i = 0; i < gs.length; i++) {
+               if (gs[i] !== g && g.contains(gs[i])) extra.push(gs[i]);
+             }
+             window.__restoreExtra = extra.length ? window.__deckRender.hideAll(extra) : null;
+           } else window.__restoreExtra = null;
            return true;
          })()`,
       );
@@ -396,7 +438,24 @@ try {
         }
       }
       await client.call("Emulation.setDefaultBackgroundColorOverride", {});
-      await evaluate(client, `window.__restore(); true`);
+      await evaluate(client, `window.__restoreExtra && window.__restoreExtra(); window.__restore(); true`);
+      // A layer whose chrome moved into a nested-canvas GIF captures fully
+      // transparent. Shipping it would double-draw the GIF's text, so drop it
+      // and let the GIF picture carry the group's entrance slot.
+      // Threshold >= 40: the deck's paper-noise ::after veil paints alpha ~6-14
+      // over the whole slide, so "no ink" is not alpha==0 but "no real paint".
+      {
+        const rawLayer = PNG2.sync.read(png);
+        let ink = false;
+        for (let i = 3; i < rawLayer.data.length; i += 4) {
+          if (rawLayer.data[i] >= 40) { ink = true; break; }
+        }
+        if (!ink) {
+          groups[k].dropped = true;
+          console.log(`[render] p${n + 1} g${k}: layer fully transparent -> dropped (GIF carries its ink)`);
+          continue;
+        }
+      }
       const file = rel(`g${k}.png`);
       writeFileSync(join(outDir, file), png);
       {
@@ -424,7 +483,7 @@ try {
         }
         writeFileSync(join(outDir, file), PNG2.sync.write(out2));
       }
-      layerPaths.push({ k, file, clip, bytes: png.length });
+      layerPaths[k] = { k, file, clip, bytes: png.length };
     }
 
     await evaluate(client, `window.__hideBits(); true`);
@@ -440,7 +499,17 @@ try {
     // looping GIFs. Text never enters a GIF, so type stays crisp while the
     // motion survives -- crisp AND animated, which is the whole point.
     const gifTargets = [];
-    groups.forEach((g, k) => (g.bits || []).forEach((b, j) => gifTargets.push({ gk: k, j, box: b.box, text: b.text, tag: b.tag })));
+    {
+      const seen = new Set();
+      groups.forEach((g, k) => (g.bits || []).forEach((b, j) => {
+        // A canvas inside nested .aN layers is listed by BOTH groups; one GIF
+        // covers it — the duplicate would be drawn twice in the deck.
+        const key = [b.tag, Math.round(b.box.x), Math.round(b.box.y), Math.round(b.box.w), Math.round(b.box.h)].join(",");
+        if (seen.has(key)) return;
+        seen.add(key);
+        gifTargets.push({ gk: k, j, box: b.box, text: b.text, tag: b.tag });
+      }));
+    }
     const dynIdx = gifTargets.map((_, i) => i);
     if (dynIdx.length && config.gif !== false) {
       const gifFrames = config.gif?.frames ?? 24;
@@ -456,7 +525,11 @@ try {
       await evaluate(client, `window.__deckRender.goto(${n === 0 ? 1 : 0}); true`);
       await evaluate(client, `window.__deckRender.gotoAnimated(${n}); true`);
       await evaluate(client, `window.__deckRender.ready()`);
-      const leadMs = hasCanvasBits ? 0 : gifLead;
+      // A canvas GIF must not bake its group's entrance (rise+fade) into the
+      // loop, or every restart replays the rise. Wait the entrance out first.
+      const leadMs = hasCanvasBits
+        ? groups.reduce((m, g) => Math.max(m, g.delayMs), 0) + (config.groups?.duration ?? 500) + 100
+        : gifLead;
       if (leadMs > 0) await new Promise((r) => setTimeout(r, leadMs));
       await evaluate(client, `window.__deckRender.freezeScale(); true`);
 
@@ -465,15 +538,20 @@ try {
         if (!target || !target.box) continue;
         await evaluate(
           client,
-          `window.__restoreDyn = window.__deckRender.isolate(window.__deckRender.animatedBits(window.__deckRender.groups(window.__deckRender.slides()[${n}])[${target.gk}])[${target.j}]); true`,
+          `window.__restoreDyn = window.__deckRender.isolate((function(){ var bits = window.__deckRender.animatedBits(window.__deckRender.groups(window.__deckRender.slides()[${n}])[${target.gk}]); var el = bits[${target.j}]; if (!el) return el; if (el.tagName === 'CANVAS' && window.__deckRender.nestedCanvas(el)) return window.__deckRender.canvasOwner(el); return el; })()); true`,
         );
         // ECharts reveals only play once at load; replay them so the GIF
         // actually captures the per-item pop-in (the successful deck's 2 GIFs
         // are exactly this).
         if (/canvas/i.test(target.tag || "")) {
+          const gl = await evaluate(client, `(function(){ try { var c = document.createElement('canvas'); return !!(c.getContext('webgl') || c.getContext('experimental-webgl')); } catch(e){ return 'err'; } })()`);
+          console.log(`[render] p${n + 1} g${target.gk} bit${target.j}: WebGL=${gl}`);
           const replayed = await evaluate(
             client,
-            `(function(){ var el = window.__deckRender.animatedBits(window.__deckRender.groups(window.__deckRender.slides()[${n}])[${target.gk}])[${target.j}];
+            `(function(){ var g = window.__deckRender.groups(window.__deckRender.slides()[${n}])[${target.gk}];
+               var bits = g ? window.__deckRender.animatedBits(g) : [];
+               var el = bits[${target.j}];
+               if (!el) return 'no-element';
                return window.__deckRender.replayCharts(el.closest('.slide') || document); })()`,
           );
           console.log(`[render] p${n + 1} g${target.gk} bit${target.j}: ${replayed} chart(s) replayed`);
@@ -575,27 +653,32 @@ try {
       base: rel(baseFile),
       width: W,
       height: H,
-      groups: groups.map((g, k) => ({
-        k,
-        bits: g.bits,
-        file: layerPaths[k].file,
-        x: layerPaths[k].clip.x,
-        y: layerPaths[k].clip.y,
-        w: layerPaths[k].clip.width,
-        h: layerPaths[k].clip.height,
-        delayMs: g.delayMs,
-        durationMs: g.durationMs,
-        moveY: g.moveY,
-        easing: g.easing,
-        permanent: g.permanent,
-        canvas: g.canvas,
-        gif: g.gif,
-        gifFrames: g.gifFrames,
-        gifMoves: g.gifMoves,
-        text: g.text,
-      })),
+      groups: groups.map((g, k) => {
+        const lp = layerPaths[k];
+        return {
+          k,
+          bits: g.bits,
+          file: lp ? lp.file : null,
+          dropped: g.dropped === true ? true : undefined,
+          x: lp ? lp.clip.x : Math.round(g.box.x),
+          y: lp ? lp.clip.y : Math.round(g.box.y),
+          w: lp ? lp.clip.width : Math.round(g.box.w),
+          h: lp ? lp.clip.height : Math.round(g.box.h),
+          delayMs: g.delayMs,
+          durationMs: g.durationMs,
+          moveY: g.moveY,
+          easing: g.easing,
+          permanent: g.permanent,
+          canvas: g.canvas,
+          gif: g.gif,
+          gifFrames: g.gifFrames,
+          gifMoves: g.gifMoves,
+          cls: g.cls,
+          text: g.text,
+        };
+      }),
     });
-    const kb = layerPaths.reduce((a, l) => a + l.bytes, 0) / 1024;
+    const kb = Object.values(layerPaths).reduce((a, l) => a + l.bytes, 0) / 1024;
     console.log(
       `[render] p${n + 1}/${total}: base + ${groups.length} alpha layers (${kb.toFixed(0)} KB)` +
         (groups.some((g) => g.permanent) ? "  [permanent motion detected]" : ""),

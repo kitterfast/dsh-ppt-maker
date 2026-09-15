@@ -80,6 +80,58 @@ window.__deckRender = (function () {
     return out;
   }
 
+  /* Nearest .aN ancestor of a canvas — the entrance layer that owns it. */
+  function canvasOwner(cv) {
+    var cur = cv;
+    while (cur && cur.parentElement && cur !== document.body) {
+      cur = cur.parentElement;
+      if (cur.matches && cur.matches(CFG.groups.selector)) return cur;
+    }
+    return cv;
+  }
+
+  /* Two nested .aN layers around one canvas (e.g. `.a4 > #threeAI.a4`): the
+     inner layer must become the GIF and the outer layers must lose the canvas
+     ink, exactly like the proven deck. */
+  function nestedCanvas(cv) {
+    var own = canvasOwner(cv);
+    if (!own || own === cv) return false;
+    var cur = own;
+    while (cur && cur.parentElement && cur !== document.body) {
+      cur = cur.parentElement;
+      if (cur.matches && cur.matches(CFG.groups.selector)) return true;
+    }
+    return false;
+  }
+
+  /* What layer capture must hide: infinite-CSS elements, plus THREE canvases —
+     or their owning .aN layer when nested, so the GIF replaces the whole group
+     instead of leaving the group's chrome (title, background) duplicated. */
+  function hiddenBits(slideEl) {
+    var bits = animatedBitsOf(slideEl);
+    var out = [], seen = [];
+    for (var i = 0; i < bits.length; i++) {
+      var b = bits[i];
+      var keep = b;
+      if (b.tagName === 'CANVAS' && nestedCanvas(b)) keep = canvasOwner(b);
+      if (seen.indexOf(keep) === -1) { seen.push(keep); out.push(keep); }
+    }
+    return out;
+  }
+
+  /* Owners of nested canvases (deduped) — their ancestor .aN groups must hide
+     every descendant group during capture, or the ancestor layer keeps ink that
+     belongs to a child layer and the entrance timing doubles. */
+  function nestedOwners(slideEl) {
+    var bits = animatedBitsOf(slideEl), out = [], seen = [];
+    for (var i = 0; i < bits.length; i++) {
+      if (bits[i].tagName !== 'CANVAS' || !nestedCanvas(bits[i])) continue;
+      var own = canvasOwner(bits[i]);
+      if (seen.indexOf(own) === -1) { seen.push(own); out.push(own); }
+    }
+    return out;
+  }
+
 
   /* ECharts plays its per-item reveal ONCE at page load; afterwards the chart
      sits at the final state and any later recording sees "no motion". Re-run
@@ -177,6 +229,7 @@ window.__deckRender = (function () {
   return {
     setCfg: setCfg, styleOnce: styleOnce, freezeScale: freezeScale,
     slides: slides, groups: groups, isolate: isolate, hideAll: hideAll, box: box, inkBox: inkBox, describe: describe, animatedBits: animatedBits, animatedBitsOf: animatedBitsOf, replayCharts: replayCharts,
+    canvasOwner: canvasOwner, nestedCanvas: nestedCanvas, hiddenBits: hiddenBits, nestedOwners: nestedOwners,
     ready: function () {
       var imgs = Array.prototype.slice.call(document.images).filter(function (i) { return !i.complete; });
       return document.fonts.ready.then(function () {
