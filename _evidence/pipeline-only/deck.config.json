@@ -1,0 +1,47 @@
+{
+  "html": "../deck/deck.html",
+  "out": "../deck/render",
+  "pptx": "../deck/AI通史-修复版.pptx",
+  "width": 1280,
+  "height": 720,
+  "slide": ".slide",
+  "page": ".page",
+  "chrome": [
+    "#progress",
+    ".nav",
+    ".hintbar"
+  ],
+  "goto": "window.__slideInfo.go",
+  "groups": {
+    "selector": ".body > *",
+    "delays": [
+      60,
+      170,
+      280,
+      390,
+      500
+    ],
+    "stagger": 110,
+    "duration": 500,
+    "moveY": 14,
+    "easing": [
+      0.22,
+      0.61,
+      0.36,
+      1
+    ]
+  },
+  "transitionMs": 450,
+  "settleMs": 400,
+  "capturePad": 2,
+  "baseQuality": 88,
+  "referencePx": {
+    "width": 1280,
+    "height": 720
+  },
+  "gif": {
+    "maxPeriodMs": 15000,
+    "intervalMs": 70,
+    "leadMs": 1500
+  }
+}

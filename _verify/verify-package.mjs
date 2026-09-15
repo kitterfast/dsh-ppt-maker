@@ -33,7 +33,7 @@ const check = (label, fn) => {
 const sha = (buf) => createHash("sha256").update(buf).digest("hex");
 
 /** Directories that are never plugin source (VCS metadata, installed deps). */
-const SKIP_DIRS = new Set([".git", "node_modules"]);
+const SKIP_DIRS = new Set([".git", "node_modules", "_evidence"]);
 
 /** Walk a directory into relative file paths (no symlink following, no VCS/deps). */
 function walk(dir, base = dir) {
