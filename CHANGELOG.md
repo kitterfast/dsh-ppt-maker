@@ -1,3 +1,21 @@
+## 2.6.2 (2026-09-15)
+
+### 新增
+- class 模式校准示例 `scripts/deck/deck.config.example-class.json`：
+  写全 capturePad 10（附实测依据）、绝对延迟表、captureScale、baseFormat、verify 容差
+- README 新增两节：capturePad 是唯一不可推导的常量（element 2 / class 10 双模式对照）；
+  判据为容差制而非字节相等
+
+### 说明
+- element 模式 `capturePad: 2`、class（`.aN`）模式 `capturePad: 10`，**二者不可互用**：
+  用错会让每层几何各边偏差 8px，产物与基准不一致
+- 归档集成期证据：`_evidence/tools`（75）、`_evidence/pipeline-only`（41）、
+  `scripts/deck/lib/calib`（5），共 121 文件
+- `_verify/verify-package.mjs` 的 `SKIP_DIRS` 加入 `_evidence`：
+  该目录不是插件源码，不进入发布包
+
+### 未验证
+- 渲染字节级可复现（不可达，F 项已登记；判据为容差制）
 ## 2.6.1 (2026-09-15)
 
 ### 新增
