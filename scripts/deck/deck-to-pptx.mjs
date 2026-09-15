@@ -109,6 +109,23 @@ for (const slide of manifest.slides) {
     // A dropped group's chrome moved into its nested-canvas GIF (proven-deck
     // structure): no PNG picture, but its bit GIFs below still ship.
     const useGif = g.gif && existsSync(join(outDir, g.gif));
+    // A group's canvas GIF is placed BEFORE its static layer, matching the proven
+    // deck's own document order (page 10: the .a6 GIF is picture 7 and the static
+    // .a6 layer picture 8). Both animation effects still share the class delay.
+    (g.bits || []).forEach((b, j) => {
+      if (!b.gif || !existsSync(join(outDir, b.gif))) return;
+      s.addImage({
+        path: join(outDir, b.gif),
+        x: inch(b.box.x),
+        y: inch(b.box.y),
+        w: inch(b.box.w),
+        h: inch(b.box.h),
+        objectName: `g${g.k}b${j}`,
+        altText: b.text || `slide ${slide.page} bit ${g.k}.${j}`,
+      });
+    });
+    // A dropped group's chrome moved into its canvas GIF (proven-deck structure):
+    // no PNG picture, but its GIF above still ships.
     if (!g.dropped) {
       const file = join(outDir, useGif ? g.gif : g.file);
       if (!file || !existsSync(file)) throw new Error(`missing layer ${file}`);
@@ -122,20 +139,6 @@ for (const slide of manifest.slides) {
         altText: g.text || `slide ${slide.page} layer ${g.k}`,
       });
     }
-    // Animated sub-elements (dashed flow, waveform) ride on top of their parent
-    // layer as their own looping GIF, so the surrounding text stays lossless.
-    (g.bits || []).forEach((b, j) => {
-      if (!b.gif || !existsSync(join(outDir, b.gif))) return;
-      s.addImage({
-        path: join(outDir, b.gif),
-        x: inch(b.box.x),
-        y: inch(b.box.y),
-        w: inch(b.box.w),
-        h: inch(b.box.h),
-        objectName: `g${g.k}b${j}`,
-        altText: b.text || `slide ${slide.page} bit ${g.k}.${j}`,
-      });
-    });
   }
 
   const notes = [
@@ -265,9 +268,11 @@ function effectPar({ spid, delayMs, moveFrac, easing, durationMs, nodeType, rotF
  *
  * Emitting the effect pars directly under mainSeq instead made PowerPoint report
  * 3 effects per layer and trigger type "none" (measured: 62 layers -> 186).
- * Delay of the first effect is measured from the slide; a `withEffect` delay is
- * measured from the PREVIOUS effect's start, so absolute HTML delays are
- * converted to increments here.
+ * Every effect carries its class's ABSOLUTE delay, which is what the proven deck
+ * does: its own XML reads 40,150,260,370,480 on one page and 40,260,370,480 on
+ * the page whose HTML has no .a2 element at all. Converting those to increments
+ * (the earlier behaviour) wrote a constant 110 into every effect after the first,
+ * so nothing on any page played in sequence.
  */
 function timingXml(effects, buildIds) {
   // Time-node ids restart at 3 for EVERY slide, matching the deck that is
@@ -277,13 +282,10 @@ function timingXml(effects, buildIds) {
   idSeq = 2;
   const groupId = nextId();
   const innerId = nextId();
-  let prevDelay = 0;
   const pars = effects
     .map((e, i) => {
       const nodeType = i === 0 ? "afterEffect" : "withEffect";
-      const delay = i === 0 ? e.delayMs : Math.max(0, e.delayMs - prevDelay);
-      prevDelay = e.delayMs;
-      return effectPar({ ...e, delayMs: delay, nodeType });
+      return effectPar({ ...e, delayMs: e.delayMs, nodeType });
     })
     .join("");
   const bld = buildIds.map((id) => `<p:bldP spid="${id}" grpId="0"/>`).join("");

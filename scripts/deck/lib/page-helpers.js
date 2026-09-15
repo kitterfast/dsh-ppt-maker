@@ -23,6 +23,14 @@ window.__deckRender = (function () {
       '\n.page{transform:none !important}' +
       '\nhtml.__deck_isolate .page,html.__deck_isolate .slide,html.__deck_isolate .body' +
       '{background:transparent !important;box-shadow:none !important}' +
+      // Full-slide pseudo-element veils (the paper-noise ::after at alpha ~6-14)
+      // paint over the WHOLE layer rectangle, so no layer pixel is ever fully
+      // transparent. Measured on the rebuilt deck: 0.0% transparent pixels per
+      // layer against the proven deck's 70-99%, which cost ~10MB of PNG across
+      // 11 pages. The veil still lives in the BASE, which is captured outside
+      // isolation, so the composite is unchanged.
+      '\nhtml.__deck_isolate .slide::after,html.__deck_isolate .slide::before' +
+      '{display:none !important}' +
       '\nhtml.__deck_isolate .crop{display:none !important}';
     document.head.appendChild(s);
   }
@@ -160,13 +168,20 @@ window.__deckRender = (function () {
     return n;
   }
 
+  /* Idempotent: one isolate list can legitimately name the same node twice (a
+     hidden .aN layer is also a non-member sibling on the ancestor walk). Without
+     the dedupe the restore replays both history entries in order — '' then
+     'hidden' — and leaves the node hidden for every LATER capture, which emptied
+     page 1's a2..a5 layers while a1 (captured first) looked fine. */
   function hideEls(list) {
-    var prev = [];
+    var prev = [], seen = [];
     for (var i = 0; i < list.length; i++) {
+      if (seen.indexOf(list[i]) !== -1) continue;
+      seen.push(list[i]);
       prev.push(list[i].style.visibility);
       list[i].style.visibility = 'hidden';
     }
-    return function restore() { for (var i = 0; i < list.length; i++) list[i].style.visibility = prev[i]; };
+    return function restore() { for (var i = 0; i < seen.length; i++) seen[i].style.visibility = prev[i]; };
   }
 
   function isolate(keep) {
@@ -226,10 +241,165 @@ window.__deckRender = (function () {
     };
   }
 
+  /* ══════════════════════════════════════════════════════════════════════════
+   * LAYER MODEL — one layer per distinct .aN CLASS, not per element.
+   *
+   * The proven deck is built this way and it is visible in its own XML: page 1
+   * has EIGHT elements carrying .a1…​.a5 but only FIVE layers, and page 11 skips
+   * the .a2 delay entirely (40,260,370,480) because that page has no .a2 element
+   * at all. Per-element layers produced 68 layers against the proven deck's 56.
+   *
+   * Repeated classes merge: every element with .a4 on a page becomes ONE layer
+   * whose box is the union of its members. The element-level helpers above are
+   * kept unchanged so the probes and the fidelity check still work.
+   * ═════════════════════════════════════════════════════════════════════════ */
+  function classOf(el) {
+    var m = /(?:^|\s)(a\d+)(?=\s|$)/.exec(el.className || '');
+    return m ? m[1] : null;
+  }
+
+  function elsOf(x) { return x && x.els ? x.els : (x ? [x] : []); }
+
+  function deckGroups(slideEl) {
+    var els = groups(slideEl), order = [], map = {}, allClassed = true;
+    for (var i = 0; i < els.length; i++) {
+      var c = classOf(els[i]);
+      if (c) {
+        if (!map[c]) { map[c] = { cls: c, els: [] }; order.push(c); }
+        map[c].els.push(els[i]);
+      } else {
+        // A deck whose layer selector carries no .aN class (the AI decks declare
+        // theirs as `.body > *`, with delays from nth-child rules) must keep the
+        // legacy one-layer-per-element split. Without this every element would be
+        // skipped and the deck would build with ZERO pictures.
+        allClassed = false;
+        var key = '#' + i;
+        map[key] = { cls: null, els: [els[i]], legacy: true };
+        order.push(key);
+      }
+    }
+    if (allClassed) {
+      order.sort(function (a, b) { return parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10); });
+    }
+    return order.map(function (k) { return map[k]; });
+  }
+
+  /* Plain layout rect. NO box-shadow growth: the proven deck pads every layer by
+     a constant 10px instead, which covers the card shadows without inflating
+     each box to the element's own (uneven) ink extent. */
+  function rectOf(el) {
+    var r = el.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+
+  function unionRect(x) {
+    var els = elsOf(x), r = null;
+    // Classless (legacy) groups keep the old box: the element's own INK extent,
+    // box-shadow included, because those decks have no measured 10px convention.
+    if (x && x.legacy && els.length === 1) return inkBox(els[0]);
+    for (var i = 0; i < els.length; i++) {
+      var b = rectOf(els[i]);
+      r = r ? { x: Math.min(r.x, b.x), y: Math.min(r.y, b.y),
+                r: Math.max(r.r, b.x + b.w), b: Math.max(r.b, b.y + b.h) }
+            : { x: b.x, y: b.y, r: b.x + b.w, b: b.y + b.h };
+    }
+    if (!r) return null;
+    return { x: r.x, y: r.y, w: r.r - r.x, h: r.b - r.y };
+  }
+
+  /* Isolate a SET of elements: hide every other .aN layer AND every non-member
+     sibling along each member's ancestor chain. Hiding an ancestor of a member
+     would hide the member itself, so ancestors of members always survive. */
+  function isolateMany(x) {
+    var keep = elsOf(x), toHide = [];
+    var all = document.querySelectorAll(CFG.groups.selector);
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (keep.indexOf(e) !== -1) continue;
+      var holds = false;
+      for (var h = 0; h < keep.length; h++) if (e.contains(keep[h])) { holds = true; break; }
+      if (!holds) toHide.push(e);
+    }
+    // Only LEGACY groups hide non-member siblings too. A class layer keeps the
+    // slide's non-animated content, exactly like the proven deck -- page 6's
+    // yellow note (a plain div, no .aN class) is baked into its .a4 layer there,
+    // so it rises with that entrance instead of sitting still in the base.
+    if (x && x.legacy) {
+      for (var j = 0; j < keep.length; j++) {
+        var cur = keep[j];
+        while (cur && cur !== document.body && cur.parentElement) {
+          var kids = cur.parentElement.children;
+          for (var t = 0; t < kids.length; t++) {
+            var k = kids[t];
+            if (k === cur) continue;
+            var has = false;
+            for (var q = 0; q < keep.length; q++) if (k === keep[q] || k.contains(keep[q])) { has = true; break; }
+            if (!has) toHide.push(k);
+          }
+          cur = cur.parentElement;
+        }
+      }
+    }
+    document.documentElement.classList.add('__deck_isolate');
+    var restoreHide = hideEls(toHide);
+    return function restore() {
+      restoreHide();
+      document.documentElement.classList.remove('__deck_isolate');
+    };
+  }
+
+  function groupDescribe(g) {
+    var els = elsOf(g), texts = [];
+    for (var i = 0; i < els.length; i++) {
+      var t = (els[i].innerText || '').replace(/\s+/g, ' ').trim();
+      if (t) texts.push(t);
+    }
+    var names = els.map(function (e) { return String(e.className); }).join(' ');
+    return {
+      text: texts.join(' | ').slice(0, 400),
+      cls: (g && g.cls ? g.cls + ' ' : '') + names,
+    };
+  }
+
+  function groupHasCanvas(g) {
+    var els = elsOf(g);
+    for (var i = 0; i < els.length; i++) if (els[i].querySelector('canvas')) return true;
+    return false;
+  }
+
+  /* Animated sub-elements of a whole class-group: infinite-CSS elements and
+     THREE canvases across all members, deduped, innermost only. */
+  function groupAnimatedBits(g) {
+    var els = elsOf(g), picked = [];
+    for (var i = 0; i < els.length; i++) {
+      var b = animatedBits(els[i]);
+      for (var j = 0; j < b.length; j++) if (picked.indexOf(b[j]) === -1) picked.push(b[j]);
+    }
+    return picked.filter(function (n) {
+      return !picked.some(function (m) { return m !== n && m.contains(n); });
+    });
+  }
+
+  /* What the STATIC layer of this group must hide: a canvas that sits inside the
+     layer is drawn by its own GIF, so the canvas (or the .aN layer that owns it,
+     which also carries the screen's chrome) must not be baked into the PNG. */
+  function groupHiddenBits(g) {
+    var bits = groupAnimatedBits(g), out = [], seen = [];
+    for (var i = 0; i < bits.length; i++) {
+      var b = bits[i], keep = b;
+      if (b.tagName === 'CANVAS' && nestedCanvas(b)) keep = canvasOwner(b);
+      if (seen.indexOf(keep) === -1) { seen.push(keep); out.push(keep); }
+    }
+    return out;
+  }
+
   return {
     setCfg: setCfg, styleOnce: styleOnce, freezeScale: freezeScale,
     slides: slides, groups: groups, isolate: isolate, hideAll: hideAll, box: box, inkBox: inkBox, describe: describe, animatedBits: animatedBits, animatedBitsOf: animatedBitsOf, replayCharts: replayCharts,
     canvasOwner: canvasOwner, nestedCanvas: nestedCanvas, hiddenBits: hiddenBits, nestedOwners: nestedOwners,
+    classOf: classOf, deckGroups: deckGroups, elsOf: elsOf, rectOf: rectOf, unionRect: unionRect,
+    isolateMany: isolateMany, groupDescribe: groupDescribe, groupHasCanvas: groupHasCanvas,
+    groupAnimatedBits: groupAnimatedBits, groupHiddenBits: groupHiddenBits,
     ready: function () {
       var imgs = Array.prototype.slice.call(document.images).filter(function (i) { return !i.complete; });
       return document.fonts.ready.then(function () {
