@@ -44,6 +44,13 @@ const attached =
   argument === '--current' ? await attachPage(client) : await newPage(client, argument)
 const sessionId = attached.sessionId
 
+// The tab we just opened is NOT the foreground tab (the browser is already
+// sitting on a 火山 tab), and Chromium does not produce compositor frames for a
+// backgrounded tab -- so `Page.captureScreenshot` never returns and times out
+// after 30s, killing the whole login at step 1. Activating the tab first makes
+// the capture return in ~80ms (measured 2026-09-14: 20s timeout -> 77ms).
+await client.call('Page.bringToFront', {}, sessionId)
+
 /** True when a base64 code belongs to this authorize request. */
 function codeMatchesState(value) {
   if (expectedState === undefined) return true
