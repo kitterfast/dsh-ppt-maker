@@ -252,9 +252,16 @@ try {
   // 1:1 (infinite loops and canvas have NO working mechanism in WPS).
   {
     const { spawnSync } = await import("node:child_process");
-    const r = spawnSync(process.execPath, [fileURLToPath(new URL("./tools/extract-anim-spec.mjs", import.meta.url)), htmlPath, "--check"], { encoding: "utf8" });
+    // A config that declares groups.selector + groups.delays has already fixed
+    // the layer split, so the strict .a1…​.aN naming is a convention, not a
+    // requirement; infinite/canvas still get baked as looping GIFs either way.
+    const declaredLayers = !!(config.groups?.selector && Array.isArray(config.groups?.delays));
+    const checkArgs = [fileURLToPath(new URL("./tools/extract-anim-spec.mjs", import.meta.url)), htmlPath, "--check"];
+    if (declaredLayers) checkArgs.push("--declared");
+    const r = spawnSync(process.execPath, checkArgs, { encoding: "utf8" });
     if (r.stdout) process.stdout.write(r.stdout);
-    if (r.status !== 0) { if (r.stderr) process.stderr.write(r.stderr); process.exit(1); }
+    if (r.stderr) process.stderr.write(r.stderr);
+    if (r.status !== 0) process.exit(1);
   }
 
   const total = await evaluate(client, `window.__deckRender.slides().length`);

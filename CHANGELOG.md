@@ -2,6 +2,20 @@
 
 版本号写在 `package.json` 与 `lib/client.js` 的 `PLUGIN_VERSION` 两处，校验器会断言两者一致。
 
+## 2.3.3
+
+**"层已显式声明"的宽松契约：非 .aN 命名的稿子也能转，常驻动画改用 GIF 烘焙。**
+
+- 新增 `--declared`：当 `deck.config.json` 里显式写了 `groups.selector` + `groups.delays`（层与延迟由人声明，不靠猜）时，
+  严格契约里的"多个 @keyframes / 没有 .a1…​.aN 类名 / 有 infinite / 有 <canvas>"降级为 note，不再拒绝转换。
+- 能力依据：infinite 与 canvas 现在都有可行机制——**烘焙成循环 GIF**（已证实能播的基准稿本身就有 2 张 GIF；
+  本插件的参考稿第 7/10 页画布 GIF、AI 通史 4 处 dashflow GIF 都按整周期录制）。
+- 用 `--declared` 成功转换了两份真实稿子：
+  - **AI 通史**：20 页，4 处 dashflow 按 14000ms 整周期录 200 帧（循环无缝）+ 1 个画布 GIF；
+  - **AI 加速之后**：21 页，5 个画布 GIF + 1 个闪烁光标 GIF（16 帧 / 1100ms 周期）。
+  - 两份稿子的 `.body > *` 子元素即入场层，延迟来自 HTML 的 nth-child 规则，config 里显式列出。
+- 不变式仍然强制：没有任何 @keyframes = 直接失败；图层必须全部不透明（WPS 的 alpha 黑块）。
+
 ## 2.3.2
 
 **第 7 / 10 页的 THREE 画布真正动起来了，产物结构与"已证实能播"的基准稿逐项对齐。**

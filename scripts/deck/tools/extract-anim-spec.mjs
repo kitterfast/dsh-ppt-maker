@@ -128,21 +128,40 @@ const spec = {
 };
 
 if (process.argv.includes("--check")) {
+  /*
+   * --declared: the config explicitly declares the layer selector and the delay
+   * table (groups.selector + groups.delays), so the layer split is DECLARED, not
+   * guessed -- the fixed .a1…​.aN naming is then only a convention, not the only
+   * way to be unambiguous. Infinite CSS motion and <canvas> are not refused
+   * either: the renderer bakes both as looping GIFs, which WPS does play (the
+   * proven deck ships two such GIFs; captured on p7/p10 of the reference deck).
+   * Without --declared the strict contract still applies.
+   */
+  const declared = process.argv.includes("--declared");
   const problems = [];
+  const notes = [];
+  const push = (msg) => (declared ? notes : problems).push(msg);
   if (spec.keyframes.length === 0) problems.push("没有任何 @keyframes —— 入场动画无处可读");
-  if (spec.keyframes.length > 1) problems.push(`有 ${spec.keyframes.length} 个 @keyframes；契约要求全篇只用 1 个（命名 rise）`);
-  if (!spec.layerClasses.length) problems.push("没有找到 .a1…​.aN 固定层类名 —— 层与延迟必须显式声明，不能靠猜");
-  if (spec.forbidden.infiniteAnimations) problems.push(`${spec.forbidden.infiniteAnimations} 处 infinite：WPS 无法表达无限循环（实测 GIF/视频都不播）`);
-  if (spec.forbidden.canvas) problems.push(`${spec.forbidden.canvas} 个 <canvas>：常驻动画在 WPS 里没有可行机制`);
+  if (spec.keyframes.length > 1) push(`有 ${spec.keyframes.length} 个 @keyframes；严格契约要求全篇只用 1 个（命名 rise）`);
+  if (!spec.layerClasses.length) push("没有找到 .a1…​.aN 固定层类名（已由 config 显式声明层选择器与延迟表）");
+  if (spec.forbidden.infiniteAnimations) push(`${spec.forbidden.infiniteAnimations} 处 infinite：将烘焙为循环 GIF（WPS 可播）`);
+  if (spec.forbidden.canvas) push(`${spec.forbidden.canvas} 个 <canvas>：将烘焙为循环 GIF（WPS 可播）`);
   if (spec.forbidden.raf) console.warn(`[contract] note: ${spec.forbidden.raf} requestAnimationFrame call(s) - confirm they are not a permanent loop`);
+  for (const n of notes) console.warn(`[contract] note: ${n}`);
   if (problems.length) {
     console.error("[contract] FAILED — 这份 HTML 不满足可转换契约：");
     for (const p of problems) console.error("  - " + p);
     console.error("  改法：入场层用固定类名 .a1…​.aN（每个类 = 一层）；全篇一个 @keyframes rise，from/to 明写 opacity/transform；");
-    console.error("        延迟写进 animation 简写；去掉 infinite 与 <canvas> 常驻动画（WPS 播不了，只会变成静止）。");
+    console.error("        延迟写进 animation 简写；去掉 infinite 与 <canvas> 常驻动画，或在 deck.config.json 里显式声明");
+    console.error("        groups.selector + groups.delays（工具会改用 GIF 烘焙常驻动画）。");
     process.exit(1);
   }
-  console.log("[contract] ok — 只读不猜所需的信息齐全（" + spec.layerClasses.length + " 层 / " + spec.keyframes.length + " 个 keyframes）");
+  console.log(
+    "[contract] ok — " +
+      (declared ? "层与延迟由 config 显式声明" : "只读不猜所需的信息齐全") +
+      "（" + (spec.layerClasses.length || "declared") + " 层 / " + spec.keyframes.length + " 个 keyframes" +
+      (notes.length ? ` / ${notes.length} 条放宽` : "") + "）",
+  );
   process.exit(0);
 }
 
